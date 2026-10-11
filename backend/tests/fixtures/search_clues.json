@@ -1,0 +1,18 @@
+[
+  {
+    "question": "the note where Priya discussed the Q4 renewal with Contoso",
+    "payload": {
+      "rewrites": ["Q4 renewal planning"],
+      "soft_clues": ["Priya", "Contoso"]
+    },
+    "expected_terms": ["q4", "renewal", "planning", "priya", "contoso"]
+  },
+  {
+    "question": "what was said about the launch date?",
+    "payload": {
+      "rewrites": ["launch schedule"],
+      "soft_clues": ["launch date"]
+    },
+    "expected_terms": ["launch", "schedule", "date"]
+  }
+]

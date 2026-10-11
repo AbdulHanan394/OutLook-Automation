@@ -1,0 +1,22 @@
+[project]
+name = "email-finder-backend"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115", "uvicorn[standard]>=0.30", "pydantic-settings>=2.6",
+  "sqlalchemy>=2.0", "psycopg[binary]>=3.2", "alembic>=1.14", "httpx>=0.28",
+  "cryptography>=43", "beautifulsoup4>=4.12", "anthropic>=0.40", "msal>=1.31",
+  "python-json-logger>=3.2", "pypdf>=5.0", "python-docx>=1.1", "openpyxl>=3.1"
+]
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.8", "mypy>=1.13", "pip-audit>=2.7", "bandit>=1.7"]
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+[tool.ruff]
+line-length = 100
+[tool.mypy]
+strict = true
+files = ["app"]
+[tool.setuptools.packages.find]
+include = ["app", "app.*"]

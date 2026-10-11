@@ -1,0 +1,2 @@
+{"id":"q017","feature":"find","query":"project deadline budget approval","filters":{"sender":null,"from":null,"to":null},"sender_hint":"project manager","date_hint":"March","correct_email_ids":["em_planted_07"],"acceptable_ids":[],"difficulty":"paraphrase","split":"dev"}
+{"id":"a009","feature":"ask","query":"What delivery date did we agree on with the client?","expected_facts":["30 April"],"correct_email_ids":["em_planted_12"],"split":"dev"}

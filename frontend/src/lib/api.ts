@@ -1,0 +1,3 @@
+const API = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+function csrf() { return document.cookie.split("; ").find(x => x.startsWith("csrf_token="))?.split("=")[1] || ""; }
+export async function api<T>(path: string, init: RequestInit = {}): Promise<T> { const method = init.method || "GET"; const response = await fetch(`${API}${path}`, { ...init, credentials: "include", headers: { "Content-Type": "application/json", ...(method !== "GET" ? { "X-CSRF-Token": csrf() } : {}), ...init.headers } }); if (!response.ok) throw new Error(response.status === 429 ? "Too many requests. Please wait a moment." : "Request failed."); if (response.status === 204) return undefined as T; return response.json(); }
