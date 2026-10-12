@@ -304,7 +304,7 @@ export default function Find() {
         <h1>Find an email</h1>
         <p className="page-description">Search words you remember to find the message in your connected Outlook mailbox.</p>
       </div>
-      <form className="form-panel form-grid" onSubmit={submit}>
+      <form className="form-panel form-grid find-form" onSubmit={submit}>
         {mailboxes.length > 1 && (
           <label>
             Outlook account

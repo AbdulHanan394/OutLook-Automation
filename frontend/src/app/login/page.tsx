@@ -1,5 +1,6 @@
 "use client";
 import { api } from "../../lib/api";
+import ThemeToggle from "../../components/theme-toggle";
 export default function Login() {
   async function signIn() {
     const { authorization_url } = await api<{ authorization_url: string }>("/api/auth/login");
@@ -8,6 +9,7 @@ export default function Login() {
 
   return (
     <main className="login-layout">
+      <ThemeToggle className="login-theme-toggle" />
       <section className="card login-card">
         <div className="login-mark" aria-hidden="true">O</div>
         <h1>Find your Outlook email</h1>

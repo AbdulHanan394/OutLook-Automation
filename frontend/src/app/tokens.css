@@ -1,0 +1,29 @@
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f8f7f7;
+  --surface: #efeded;
+  --border: #d4d1d2;
+  --text: #171516;
+  --text-2: #474245;
+  --text-3: #777174;
+  --accent: #171516;
+  --accent-contrast: #f8f7f7;
+  --danger: #a32626;
+  --success: #326b46;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121011;
+  --surface: #1c1a1b;
+  --border: #393536;
+  --text: #f3f0f1;
+  --text-2: #c7c1c3;
+  --text-3: #a49da0;
+  --accent: #f3f0f1;
+  --accent-contrast: #121011;
+  --danger: #f07878;
+  --success: #80c995;
+}
