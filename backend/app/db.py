@@ -107,10 +107,15 @@ class Email(Base, Timestamped):
     commitment_extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     has_attachments: Mapped[bool] = mapped_column(Boolean, default=False)
     body_text: Mapped[str | None] = mapped_column(Text)
+    body_html: Mapped[str | None] = mapped_column(Text)
     body_preview: Mapped[str | None] = mapped_column(Text)
     web_link: Mapped[str | None] = mapped_column(Text)
     content_hash: Mapped[str] = mapped_column(String(64))
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=True)
+    importance: Mapped[str] = mapped_column(String(16), default="normal")
+    is_flagged: Mapped[bool] = mapped_column(Boolean, default=False)
+    categories: Mapped[list[str] | None] = mapped_column(JSONB, default=list)
 
 
 # Reference to the stored generated tsvector column created in migration 0001

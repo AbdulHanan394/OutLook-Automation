@@ -1,6 +1,7 @@
 """Idempotent Graph delta ingestion. URLs returned by Graph are opaque and never logged."""
 import logging
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import delete, select
@@ -11,14 +12,36 @@ from app.graph.client import GraphClient, GraphError, GraphPayloadTooLarge
 from app.ingest.attachments import attachment_file_type, extract_attachment_text
 from app.ingest.chunk import chunk_email
 from app.ingest.extract import clean_body, content_hash, normalized_content_hash
+from app.mail.sanitize import sanitize_email_html
 
-MESSAGE_SELECT = "id,internetMessageId,conversationId,parentFolderId,subject,sender,toRecipients,ccRecipients,bccRecipients,receivedDateTime,sentDateTime,hasAttachments,body,bodyPreview,webLink"
+MESSAGE_SELECT = "id,internetMessageId,conversationId,parentFolderId,subject,sender,toRecipients,ccRecipients,bccRecipients,receivedDateTime,sentDateTime,hasAttachments,isRead,importance,flag,categories,body,bodyPreview,webLink"
 ATTACHMENT_SELECT = "id,name,contentType,size,isInline,lastModifiedDateTime,@odata.type"
 logger = logging.getLogger(__name__)
 
 def _address(value: dict | None) -> tuple[str | None, str | None]:
     address = (value or {}).get("emailAddress", {})
     return address.get("name"), address.get("address")
+
+# These three are display-only state mirrored from Graph. The app is read-only:
+# nothing here is ever written back to the mailbox, it is only ever observed.
+IMPORTANCE_VALUES = {"low", "normal", "high"}
+
+
+def _importance(message: dict[str, Any]) -> str:
+    value = message.get("importance")
+    return value if isinstance(value, str) and value in IMPORTANCE_VALUES else "normal"
+
+
+def _is_flagged(message: dict[str, Any]) -> bool:
+    flag = message.get("flag")
+    return isinstance(flag, dict) and flag.get("flagStatus") == "flagged"
+
+
+def _categories(message: dict[str, Any]) -> list[str]:
+    raw = message.get("categories")
+    if not isinstance(raw, list):
+        return []
+    return [str(item)[:64] for item in raw if isinstance(item, str)][:10]
 
 def upsert_message(db: Session, *, user_id: UUID, mailbox_id: UUID, folder_id: str, message: dict, target_tokens: int, overlap_tokens: int) -> bool:
     graph_id = message["id"]
@@ -45,6 +68,9 @@ def upsert_message(db: Session, *, user_id: UUID, mailbox_id: UUID, folder_id: s
         return False
     body = message.get("body", {})
     body_text = clean_body(body.get("content", ""), body.get("contentType", "html"))
+    # Sanitised at ingest, with remote images already stripped, so the database
+    # only ever holds inert markup. The reading pane re-sanitises on render.
+    body_html = sanitize_email_html(body.get("content", "")) if body.get("contentType") == "html" else None
     sender_name, sender_address = _address(message.get("sender"))
     received = datetime.fromisoformat(message["receivedDateTime"])
     sent_at = datetime.fromisoformat(message["sentDateTime"]) if message.get("sentDateTime") else None
@@ -54,6 +80,14 @@ def upsert_message(db: Session, *, user_id: UUID, mailbox_id: UUID, folder_id: s
         existing.folder_alias = folder_id
         existing.sent_at = sent_at
         existing.has_attachments = bool(message.get("hasAttachments"))
+        # Message state is refreshed even when the body is unchanged. This is the
+        # backfill path for rows written before 0010 added these columns: the
+        # content hash ignores read state, so without this the first sync after
+        # the migration would leave every pre-existing message at its default.
+        existing.is_read = bool(message.get("isRead", True))
+        existing.importance = _importance(message)
+        existing.is_flagged = _is_flagged(message)
+        existing.categories = _categories(message)
         return False
     subject = message.get("subject")
     conversation_id = message.get("conversationId")
@@ -79,10 +113,15 @@ def upsert_message(db: Session, *, user_id: UUID, mailbox_id: UUID, folder_id: s
         "sent_at": sent_at,
         "has_attachments": bool(message.get("hasAttachments")),
         "body_text": body_text,
+        "body_html": body_html,
         "body_preview": message.get("bodyPreview"),
         "web_link": message.get("webLink"),
         "content_hash": digest,
         "is_deleted": False,
+        "is_read": bool(message.get("isRead", True)),
+        "importance": _importance(message),
+        "is_flagged": _is_flagged(message),
+        "categories": _categories(message),
     }
     if existing:
         db.execute(delete(Commitment).where(

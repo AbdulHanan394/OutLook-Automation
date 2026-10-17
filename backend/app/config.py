@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     rag_excerpt_tokens: int = 350
     rate_limit_search_per_min: int = 30
     rate_limit_ask_per_min: int = 10
+    # Browsing is deliberately looser than searching: opening a folder and
+    # scrolling a large mailbox issues a request per page, and the acceptance
+    # target is a 5,000-message folder scrolling without hitting a wall.
+    rate_limit_mail_per_min: int = Field(default=240, ge=1)
     rate_limit_commitments_per_min: int = Field(default=10, ge=1)
     rate_limit_contacts_per_min: int = Field(default=10, ge=1)
     claude_daily_call_cap: int = Field(default=100, ge=1)

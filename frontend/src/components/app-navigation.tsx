@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import ThemeToggle from "./theme-toggle";
 
 const links = [
+  { href: "/app/mail", label: "Mail" },
   { href: "/app/find", label: "Find email" },
   { href: "/app/ask", label: "Ask" },
   { href: "/app/commitments", label: "Commitments" },
