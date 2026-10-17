@@ -76,18 +76,34 @@ export default function ContactsPage() {
           autoComplete="email"
           required
         />
-        <button disabled={loading || !address.trim()}>{loading ? "Looking…" : "View contact"}</button>
+        <button disabled={loading || !address.trim()}>
+          {loading ? (
+            <>
+              <span className="button-spinner" aria-hidden="true" />
+              Looking…
+            </>
+          ) : (
+            "View contact"
+          )}
+        </button>
       </form>
       {error && <p className="status-message" role="alert">{error}</p>}
       {contact && (
-        <section className="card contact-card" aria-live="polite">
+        <section className="card contact-card stagger" aria-live="polite" key={contact.address}>
           <div className="contact-heading">
             <div>
               <h2>{contact.address}</h2>
               <p className="muted">{contact.message_count} messages · {contact.thread_count} threads</p>
             </div>
             <button type="button" onClick={briefMe} disabled={briefing || contact.message_count === 0}>
-              {briefing ? "Preparing brief…" : "Brief me"}
+              {briefing ? (
+                <>
+                  <span className="button-spinner" aria-hidden="true" />
+                  Preparing brief…
+                </>
+              ) : (
+                "Brief me"
+              )}
             </button>
           </div>
           <div className="contact-stats">
@@ -136,7 +152,7 @@ export default function ContactsPage() {
         </section>
       )}
       {brief && (
-        <section className="card answer-card" aria-live="polite">
+        <section className="card answer-card stagger" aria-live="polite">
           <h2>Recent topics</h2>
           <p>{brief.answer || brief.explanation}</p>
           {brief.claims && brief.claims.length > 0 && (

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
+import SearchProgress, { ProgressStep } from "../../../components/search-progress";
 import { api } from "../../../lib/api";
 import { useConnectedMailbox } from "../../../lib/use-connected-mailbox";
 
@@ -20,6 +21,19 @@ type ThreadSummary = {
 };
 
 const FILE_TYPES = ["pdf", "docx", "xlsx", "txt", "csv"] as const;
+
+const SEARCH_STEPS: ProgressStep[] = [
+  { id: "parse", label: "Reading your query", detail: "Pulling out people, phrases and dates.", at: 0 },
+  { id: "interpret", label: "AI is expanding your clues", detail: "Turning what you remember into search terms.", at: 380, ai: true },
+  { id: "retrieve", label: "Scanning your mailbox", detail: "Searching subject, body and attachments.", at: 1750 },
+  { id: "rank", label: "Ranking the closest matches", detail: "Cross-checking every retriever and scoring confidence.", at: 3100 },
+];
+
+const REFINE_STEPS: ProgressStep[] = [
+  { id: "read", label: "Reading your change", detail: "Working out what needs to change in the ranking.", at: 0 },
+  { id: "reweight", label: "Re-weighting the signals", detail: "Applying your hint to sender, date and phrase scores.", at: 420 },
+  { id: "rescore", label: "Scoring again", detail: "Cross-checking every retriever and scoring confidence.", at: 1450 },
+];
 
 function SummaryPanel({ summary }: { summary: ThreadSummary }) {
   return (
@@ -120,7 +134,10 @@ function EmailCard({ item, onReject, refining, pinned, onPin, searchId, feedback
 export default function Find() {
   const [query, setQuery] = useState("");
   const [result, setResult] = useState<Result>();
-  const [loading, setLoading] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [refining, setRefining] = useState(false);
+  const [resultRun, setResultRun] = useState(0);
+  const [busyLabel, setBusyLabel] = useState("");
   const [refinementHint, setRefinementHint] = useState("");
   const [refinementError, setRefinementError] = useState("");
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
@@ -153,15 +170,20 @@ export default function Find() {
   }, [mailboxId]);
 
   async function runSearch(searchQuery: string, filters: Record<string, unknown> = {}) {
-    setLoading(true);
+    setSearching(true);
+    setResult(undefined);
+    setRefinementHint("");
+    setRefinementError("");
     try {
-      setResult(await api<Result>("/api/search/email", { method: "POST", body: JSON.stringify({ mailbox_id: mailboxId, query: searchQuery, filters }) }));
+      const next = await api<Result>("/api/search/email", { method: "POST", body: JSON.stringify({ mailbox_id: mailboxId, query: searchQuery, filters }) });
+      setResult(next);
+      setResultRun(current => current + 1);
       setQuery(searchQuery);
       setFileTypes(Array.isArray(filters.file_types) ? filters.file_types.filter((item): item is string => typeof item === "string") : []);
       setRefinementHint("");
       setRefinementError("");
     } finally {
-      setLoading(false);
+      setSearching(false);
     }
   }
 
@@ -262,17 +284,21 @@ export default function Find() {
 
   async function rejectResult(emailId: string) {
     if (!result?.search_id) return;
-    setLoading(true);
+    setRefining(true);
+    setBusyLabel("Re-ranking without that email");
     setRefinementError("");
     try {
-      setResult(await api<Result>(`/api/search/${result.search_id}/refine`, {
+      const next = await api<Result>(`/api/search/${result.search_id}/refine`, {
         method: "POST",
         body: JSON.stringify({ rejected_email_ids: [emailId], hint: refinementHint || null }),
-      }));
+      });
+      setResult(next);
+      setResultRun(current => current + 1);
     } catch (error) {
       setRefinementError(error instanceof Error ? error.message : "Could not refine these results.");
     } finally {
-      setLoading(false);
+      setRefining(false);
+      setBusyLabel("");
     }
   }
 
@@ -280,22 +306,26 @@ export default function Find() {
     if (!result?.search_id || !refinementHint.trim()) return;
     const reference = result.best_match || result.alternatives?.[0];
     if (!reference) return;
-    setLoading(true);
+    setRefining(true);
+    setBusyLabel("Applying your change and searching again");
     setRefinementError("");
     try {
-      setResult(await api<Result>(`/api/search/${result.search_id}/refine`, {
+      const next = await api<Result>(`/api/search/${result.search_id}/refine`, {
         method: "POST",
         body: JSON.stringify({
           rejected_email_ids: [],
           hint: refinementHint.trim(),
           reference_email_id: reference.email_id,
         }),
-      }));
+      });
+      setResult(next);
+      setResultRun(current => current + 1);
       setRefinementHint("");
     } catch (error) {
       setRefinementError(error instanceof Error ? error.message : "Could not apply this change.");
     } finally {
-      setLoading(false);
+      setRefining(false);
+      setBusyLabel("");
     }
   }
   return (
@@ -337,7 +367,21 @@ export default function Find() {
           <span className="muted">Only matching emails with one of the selected file types will be shown. Leave all unchecked to include supported attachments in regular searches.</span>
         </fieldset>
         <div className="button-row">
-          <button disabled={loading || mailboxesLoading || !mailboxId}>{loading ? "Searching…" : "Find email"}</button>
+          <button className="find-submit" disabled={searching || refining || mailboxesLoading || !mailboxId}>
+            {searching ? (
+              <>
+                <span className="button-spinner" aria-hidden="true" />
+                Searching your mailbox…
+              </>
+            ) : refining ? (
+              <>
+                <span className="button-spinner" aria-hidden="true" />
+                Refining…
+              </>
+            ) : (
+              <>Find email</>
+            )}
+          </button>
         </div>
       </form>
       {!!mailboxId && (
@@ -384,7 +428,13 @@ export default function Find() {
       {!mailboxesLoading && !mailboxError && mailboxes.length === 0 && (
         <p className="status-message">Connect Outlook to start searching. <Link href="/app/settings">Go to Settings</Link></p>
       )}
-      <section className="result-list" aria-live="polite">
+      <SearchProgress
+        steps={refining ? REFINE_STEPS : SEARCH_STEPS}
+        running={searching || refining}
+        heading={refining ? busyLabel || "Refining your results" : "Searching your mailbox"}
+        skeleton={refining ? 0 : 2}
+      />
+      <section className="result-list" aria-live="polite" key={resultRun}>
         {result?.interpretation_mode && (
           <p className="muted">
             {result.interpretation_mode === "ai"
@@ -402,17 +452,17 @@ export default function Find() {
               What should I change?
               <input value={refinementHint} onChange={event => setRefinementHint(event.target.value)} placeholder="e.g. older than this, from Alex, about the budget" />
             </label>
-            <button className="button-secondary" type="button" onClick={applyRefinement} disabled={loading || !refinementHint.trim()}>
-              {loading ? "Applying…" : "Apply change"}
+            <button className="button-secondary" type="button" onClick={applyRefinement} disabled={refining || searching || !refinementHint.trim()}>
+              {refining ? "Applying…" : "Apply change"}
             </button>
           </div>
         )}
         {refinementError && <p className="status-message" role="alert">{refinementError}</p>}
-        {result?.confidence === "high" && result.best_match && <EmailCard item={result.best_match} onReject={rejectResult} refining={loading} pinned={pinnedEmails.some(email => email.email_id === result.best_match?.email_id)} onPin={pinEmail} searchId={result.search_id} feedbackEnabled={result.feedback_enabled} onFeedback={rateResult} threadMessages={threadMessages[result.best_match.email_id] || []} expandedThread={expandedThreadIds.includes(result.best_match.email_id)} onToggleThread={toggleThread} summaries={threadSummaries[result.best_match.email_id] || {}} summarizing={{ email: summarizingThreadIds.includes(`${result.best_match.email_id}:email`), thread: summarizingThreadIds.includes(`${result.best_match.email_id}:thread`) }} onSummarize={summarizeThread} />}
+        {result?.confidence === "high" && result.best_match && <EmailCard item={result.best_match} onReject={rejectResult} refining={refining} pinned={pinnedEmails.some(email => email.email_id === result.best_match?.email_id)} onPin={pinEmail} searchId={result.search_id} feedbackEnabled={result.feedback_enabled} onFeedback={rateResult} threadMessages={threadMessages[result.best_match.email_id] || []} expandedThread={expandedThreadIds.includes(result.best_match.email_id)} onToggleThread={toggleThread} summaries={threadSummaries[result.best_match.email_id] || {}} summarizing={{ email: summarizingThreadIds.includes(`${result.best_match.email_id}:email`), thread: summarizingThreadIds.includes(`${result.best_match.email_id}:thread`) }} onSummarize={summarizeThread} />}
         {result?.confidence === "low" && (
           <>
             <p className="muted">Several emails look similar. Add a sender or date to narrow it down.</p>
-            {result.alternatives?.map(item => <EmailCard key={item.email_id} item={item} onReject={rejectResult} refining={loading} pinned={pinnedEmails.some(email => email.email_id === item.email_id)} onPin={pinEmail} searchId={result.search_id} feedbackEnabled={result.feedback_enabled} onFeedback={rateResult} threadMessages={threadMessages[item.email_id] || []} expandedThread={expandedThreadIds.includes(item.email_id)} onToggleThread={toggleThread} summaries={threadSummaries[item.email_id] || {}} summarizing={{ email: summarizingThreadIds.includes(`${item.email_id}:email`), thread: summarizingThreadIds.includes(`${item.email_id}:thread`) }} onSummarize={summarizeThread} />)}
+            {result.alternatives?.map(item => <EmailCard key={item.email_id} item={item} onReject={rejectResult} refining={refining} pinned={pinnedEmails.some(email => email.email_id === item.email_id)} onPin={pinEmail} searchId={result.search_id} feedbackEnabled={result.feedback_enabled} onFeedback={rateResult} threadMessages={threadMessages[item.email_id] || []} expandedThread={expandedThreadIds.includes(item.email_id)} onToggleThread={toggleThread} summaries={threadSummaries[item.email_id] || {}} summarizing={{ email: summarizingThreadIds.includes(`${item.email_id}:email`), thread: summarizingThreadIds.includes(`${item.email_id}:thread`) }} onSummarize={summarizeThread} />)}
           </>
         )}
         {result?.confidence === "none" && <p className="card">{result.message || "No reliable match found. Try different words or check indexing progress."}</p>}

@@ -13,9 +13,10 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    literal_column,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.types import UserDefinedType
@@ -110,6 +111,14 @@ class Email(Base, Timestamped):
     web_link: Mapped[str | None] = mapped_column(Text)
     content_hash: Mapped[str] = mapped_column(String(64))
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+# Reference to the stored generated tsvector column created in migration 0001
+# (``setweight(subject, 'A') || setweight(body_text, 'B')``, GIN-indexed as
+# ``emails_tsv_idx``). Deliberately kept out of the ORM mapping: the column is
+# database-generated and read-only, and mapping it would make SQLAlchemy emit
+# PostgreSQL-only DDL that the SQLite-backed unit tests cannot execute.
+EMAIL_SEARCH_VECTOR = literal_column(f"{Email.__tablename__}.search_tsv", type_=TSVECTOR)
 
 
 class SearchSession(Base):

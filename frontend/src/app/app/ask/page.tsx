@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { FormEvent, useState } from "react";
+import SearchProgress, { ProgressStep } from "../../../components/search-progress";
 import { api } from "../../../lib/api";
 import { useConnectedMailbox } from "../../../lib/use-connected-mailbox";
 
@@ -17,6 +18,13 @@ const questionIdeas = [
   "Give me a gentle summary of my recent conversations",
   "What should I follow up on?",
   "What did we decide about…?",
+];
+
+const ASK_STEPS: ProgressStep[] = [
+  { id: "understand", label: "Understanding your question", detail: "Working out what you are actually asking for.", at: 0 },
+  { id: "retrieve", label: "AI is finding the relevant emails", detail: "Only excerpted, quoted text is ever sent to the model.", at: 420, ai: true },
+  { id: "answer", label: "Writing the answer", detail: "Building a grounded reply from the retrieved conversations.", at: 2000, ai: true },
+  { id: "verify", label: "Checking every quote", detail: "Confirming each claim traces back to a real email.", at: 3400 },
 ];
 
 export default function Ask() {
@@ -84,9 +92,21 @@ export default function Ask() {
           ))}
         </div>
         <div className="button-row">
-          <button disabled={mailboxesLoading || asking || !mailboxId || !selectedMailbox?.ai_consent}>{asking ? "Putting it together…" : mailboxesLoading ? "Loading account…" : "Ask my emails"}</button>
+          <button disabled={mailboxesLoading || asking || !mailboxId || !selectedMailbox?.ai_consent}>
+            {asking ? (
+              <>
+                <span className="button-spinner" aria-hidden="true" />
+                Putting it together…
+              </>
+            ) : mailboxesLoading ? (
+              "Loading account…"
+            ) : (
+              "Ask my emails"
+            )}
+          </button>
         </div>
       </form>
+      <SearchProgress steps={ASK_STEPS} running={asking} heading="Thinking about your inbox" skeleton={1} />
       {mailboxError && <p className="status-message" role="alert">{mailboxError}</p>}
       {!mailboxesLoading && !mailboxError && mailboxes.length === 0 && (
         <p className="status-message">Connect Outlook to ask questions about your email. <Link href="/app/settings">Go to Settings</Link></p>
@@ -94,7 +114,7 @@ export default function Ask() {
       {selectedMailbox && !selectedMailbox.ai_consent && <p className="status-message">Enable AI answers for this mailbox in <Link href="/app/settings">Settings</Link> to continue.</p>}
       {askError && <p className="status-message" role="alert">{askError}</p>}
       {result && (
-        <section className="card answer-card" aria-live="polite">
+        <section className="card answer-card stagger" aria-live="polite" key={question}>
           <div className="answer-heading">
             <span className="answer-avatar" aria-hidden="true">O</span>
             <h2>{result.answer ? "Here’s what I found" : "Let’s try another angle"}</h2>

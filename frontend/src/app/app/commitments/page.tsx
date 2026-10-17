@@ -142,7 +142,14 @@ export default function CommitmentsPage() {
             </label>
           )}
           <button type="button" onClick={extract} disabled={working || loading || mailboxesLoading || !mailboxId || !selectedMailbox?.ai_consent || !folder}>
-            {working ? "Checking messages…" : "Extract commitments"}
+            {working ? (
+              <>
+                <span className="button-spinner" aria-hidden="true" />
+                Checking messages…
+              </>
+            ) : (
+              "Extract commitments"
+            )}
           </button>
         </div>
       </section>
@@ -153,10 +160,23 @@ export default function CommitmentsPage() {
       {selectedMailbox && !selectedMailbox.ai_consent && <p className="status-message">Enable AI answers for this mailbox in <Link href="/app/settings">Settings</Link> to extract commitments.</p>}
       {message && <p className="status-message" role="status">{message}</p>}
       {error && <p className="status-message" role="alert">{error}</p>}
-      {loading ? <p className="muted">Loading commitments…</p> : items.length === 0 ? (
+      {loading ? (
+        <div aria-live="polite" aria-busy="true">
+          <span className="muted">Loading commitments…</span>
+          <div className="stagger" style={{ marginTop: "14px" }}>
+            {[0, 1, 2].map(index => (
+              <div className="skeleton-card" key={index}>
+                <div className="skeleton skeleton-line w-40" />
+                <div className="skeleton skeleton-line w-80" style={{ marginTop: "12px" }} />
+                <div className="skeleton skeleton-line w-60" />
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : items.length === 0 ? (
         <section className="card"><p>No {filter === "all" ? "" : `${filter} `}commitments to show yet.</p></section>
       ) : (
-        <ul className="commitment-list">
+        <ul className="commitment-list stagger">
           {items.map(item => (
             <li className="card commitment-card" key={item.id}>
               <div className="commitment-heading">
