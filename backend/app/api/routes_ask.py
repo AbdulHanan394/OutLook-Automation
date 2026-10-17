@@ -41,7 +41,7 @@ from app.llm.answer import ANSWER_SYSTEM, Excerpt, build_context, verify_answer
 from app.llm.commitments import provider_limit_reason, reserve_claude_call
 from app.llm.factory import create_json_client
 from app.llm.intent import Interpretation, interpret, interpretation_to_json, keyword_only
-from app.llm.questions import is_recent_summary_question
+from app.llm.questions import is_recent_summary_question, recent_summary_topic
 from app.llm.timeline import build_timeline, is_timeline_question
 from app.retrieval.clues import SearchClues, add_soft_clues
 from app.retrieval.fts import build_match_filter, build_queries, query_units
@@ -204,11 +204,15 @@ def retrieve_for_question(
         Email.is_deleted.is_(False),
     ]
 
-    if is_recent_summary_question(question):
-        # "summarise my recent emails" has no keywords; recency is the query.
+    if is_recent_summary_question(question) and not recent_summary_topic(question):
+        # "summarise my recent emails" has no topic; recency is the query.
         return _recent_candidates(db, base, settings.rag_max_excerpts)
 
-    units = query_units(" ".join(search_terms_for(client, question)))
+    # A recap that names a subject -- "summarise my latest emails about SE
+    # hiring" -- is a search on that subject, not a request for whatever is
+    # newest. Treating it as a bare recap returned unrelated recent messages.
+    terms = recent_summary_topic(question) or question
+    units = query_units(" ".join(search_terms_for(client, terms)))
     match_filter = build_match_filter(EMAIL_SEARCH_VECTOR, build_queries(units))
     if match_filter is None:
         return []
@@ -480,15 +484,23 @@ def ask(
                     "timeline": result.get("timeline", []),
                 },
             )
+            answer_rows = _rows_for_citations(
+                db,
+                user_id,
+                result.get("closest_emails", []),
+                _cited_email_ids(result.get("claims", [])),
+            )
             yield sse(
                 "results",
-                {"results": _rows_for_citations(
-                    db,
-                    user_id,
-                    result.get("closest_emails", []),
-                    _cited_email_ids(result.get("claims", [])),
-                ),
-                 "confidence": "high" if result.get("sufficient_evidence") else "none"},
+                {
+                    "results": answer_rows,
+                    "confidence": "high" if result.get("sufficient_evidence") else "none",
+                    # Without this the client falls back to the first row, which
+                    # opened an unrelated message while the answer described a
+                    # different one. The answer leads with its first verified
+                    # claim, so that is the message to open.
+                    "best_email_id": _best_email_id(result.get("claims", []), answer_rows),
+                },
             )
             yield sse("done", {"used_model": True, "path": "ask"})
             return
@@ -501,6 +513,21 @@ def ask(
 
 def reasons_for_all(rows: list[Email], operators: Operators) -> list[list[dict[str, str]]]:
     return [reasons_for(row, operators) for row in rows]
+
+
+def _best_email_id(claims: list[dict[str, Any]], rows: list[dict[str, Any]]) -> str | None:
+    """The email the reading pane should open for this answer.
+
+    The first verified claim names the message the answer opens on. It is only
+    used when that message is actually in the result list, so the client never
+    tries to open something the reader cannot see.
+    """
+    listed = {row["email_id"] for row in rows}
+    for claim in claims:
+        for email_id in claim.get("email_ids", []) or []:
+            if str(email_id) in listed:
+                return str(email_id)
+    return None
 
 
 def _cited_email_ids(claims: list[dict[str, Any]]) -> set[str]:

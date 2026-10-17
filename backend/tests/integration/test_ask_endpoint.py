@@ -455,6 +455,72 @@ def test_answer_prompt_includes_the_question(client: TestClient, db, monkeypatch
     assert "Shall we get lunch on Friday?" in answer_prompts[0]
 
 
+def test_ask_names_the_email_the_answer_is_about(client: TestClient, db, monkeypatch) -> None:
+    """`best_email_id` must be the cited message, not the newest one.
+
+    The reading pane auto-opens `best_email_id` and falls back to the first row
+    when it is absent, so a missing value opened an unrelated message while the
+    answer described a different one.
+    """
+
+    class Answered:
+        def json_message(self, system: str, prompt: str, max_tokens: int = 1200):
+            if "keywords" in system:
+                return ({"keywords": ["lunch"]}, 5, 5)
+            label = re.search(r'<email id="([^"]+)"', prompt)
+            assert label, f"no excerpt label in prompt: {prompt[:200]}"
+            return (
+                {
+                    "sufficient_evidence": True,
+                    "answer": "You suggested lunch on Friday.",
+                    "claims": [
+                        {
+                            "text": "You suggested lunch on Friday.",
+                            "type": "explicit",
+                            "sources": [label.group(1)],
+                            "quote": "Shall we get lunch on Friday?",
+                        }
+                    ],
+                },
+                5,
+                5,
+            )
+
+    stub = Answered()
+    monkeypatch.setattr("app.api.routes_ask.reserve_claude_call", lambda *a, **k: True)
+    monkeypatch.setattr("app.api.routes_ask.create_json_client", lambda *a, **k: stub)
+
+    user = make_user(db, "best@example.test")
+    mailbox = make_mailbox(db, user, ai_consent=True)
+    # A newer, unrelated message that must not become the opened one.
+    make_email(
+        db,
+        user,
+        mailbox,
+        graph_id="noise",
+        subject="Invoice attached",
+        body_text="Your invoice is attached.",
+        received_at=datetime(2026, 2, 1, tzinfo=UTC),
+    )
+    cited = make_email(
+        db,
+        user,
+        mailbox,
+        graph_id="lunch",
+        subject="Lunch",
+        body_text="Shall we get lunch on Friday?",
+        received_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    sign_in(db, client, user)
+    events = dict(read_events(ask(client, str(mailbox.id), "what did we say about lunch?", mode="ask")))
+
+    assert events["citations"]["sufficient"] is True
+    assert events["results"]["best_email_id"] == str(cited.id), (
+        "the reading pane must open the email the answer is about"
+    )
+
+
 def test_prompt_injection_email_does_not_change_the_answer(
     client: TestClient, db, monkeypatch
 ) -> None:

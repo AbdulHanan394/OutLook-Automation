@@ -79,6 +79,11 @@ export default function MailClient() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [thread, setThread] = useState<MessageRow[]>([]);
   const [highlightQuote, setHighlightQuote] = useState<string | null>(null);
+  // Quote per cited email, so opening a cited message can show the passage the
+  // answer drew from it. A ref because the citations frame can arrive after the
+  // message has already been opened.
+  const claimQuotes = useRef<Map<string, string>>(new Map());
+  const selectedIdRef = useRef<string | null>(null);
 
   const [accountOpen, setAccountOpen] = useState(false);
   const [mobilePane, setMobilePane] = useState<MobilePane>("list");
@@ -236,9 +241,10 @@ export default function MailClient() {
     async (id: string) => {
       if (!mailboxId) return;
       setSelectedId(id);
+      selectedIdRef.current = id;
       setDetailLoading(true);
       setDetailError(null);
-      setHighlightQuote(null);
+      setHighlightQuote(claimQuotes.current.get(id) ?? null);
       setMobilePane("reading");
       try {
         const payload = await getMessage(mailboxId, id);
@@ -294,6 +300,8 @@ export default function MailClient() {
       setResults([]);
       setAnswer("");
       setClaims([]);
+      claimQuotes.current = new Map();
+      setHighlightQuote(null);
       setAnswerSufficient(false);
       setBestEmailId(null);
       setResultMessage(null);
@@ -327,9 +335,6 @@ export default function MailClient() {
                 setStatusBusy(event.confidence === "none" ? "idle" : "writing");
                 const target = event.best_email_id ?? event.results[0]?.email_id ?? null;
                 if (target) {
-                  const first = event.results.find((row) => row.email_id === target);
-                  const claimQuote = first?.reasons?.[0]?.detail ?? null;
-                  setHighlightQuote(claimQuote);
                   void openMessage(target);
                 }
                 break;
@@ -337,10 +342,22 @@ export default function MailClient() {
               case "answer_delta":
                 setAnswer((current) => current + event.text);
                 break;
-              case "citations":
-                setClaims(event.claims ?? []);
+              case "citations": {
+                const next = event.claims ?? [];
+                setClaims(next);
                 setAnswerSufficient(Boolean(event.sufficient));
+                const quotes = new Map<string, string>();
+                for (const claim of next) {
+                  for (const id of claim.email_ids ?? []) {
+                    if (!quotes.has(id)) quotes.set(id, claim.quote);
+                  }
+                }
+                claimQuotes.current = quotes;
+                // The message may already be open from the results frame.
+                const open = selectedIdRef.current;
+                setHighlightQuote(open ? (quotes.get(open) ?? null) : null);
                 break;
+              }
               case "error":
                 setNotice(event.message);
                 break;
@@ -383,6 +400,8 @@ export default function MailClient() {
     setChips([]);
     setAnswer("");
     setClaims([]);
+    claimQuotes.current = new Map();
+    setHighlightQuote(null);
     setAnswerSufficient(false);
     setNotice(null);
     setSubmittedQuery("");

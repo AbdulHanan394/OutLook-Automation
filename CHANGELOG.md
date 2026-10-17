@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- A recap question that names a subject is now treated as a search on that subject. "Summarize my latest emails about SE hiring" was classified as a bare recap and returned whichever messages were newest, so the answer described unrelated mail while the message actually asked about sat fifth in the list.
+- The Ask results frame now names `best_email_id`, the email the answer is actually about. Without it the reading pane fell back to the first result and opened an unrelated message while the summary described a different one.
+- The reading pane's "Cited passage" now shows the real quoted text. It was being set to the match-reason label ("Cited in the answer"), and `openMessage` cleared it immediately afterwards, so it never appeared at all.
+
 - The Mail ask bar now receives the user's question. It was sending the answer model only a pile of email excerpts plus an instruction to answer a question it never received, so a recap such as "summarize my latest emails" reliably reported that there was not enough evidence. `/app/ask` already included it.
 - Both Ask endpoints now share one answer prompt (`app/llm/prompts/answer_system.txt`, loaded by `app.llm.answer`). They previously carried separate copies, and the ask bar's copy never described the response schema at all, so the provider returned `source` instead of `sources` with no `text` or `type` and every claim was discarded as unverifiable. The prompt file itself was dead code that nothing loaded.
 - Answer verification no longer discards a correct answer because of how the provider shaped its JSON. In practice the model restyles punctuation (a non-breaking hyphen for a plain one) and stitches quotes together with "...". Verification now folds typographic look-alikes, verifies each span of an elided quote on its own, and keeps the spans that are genuinely verbatim.
