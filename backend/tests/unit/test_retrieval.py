@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import Column, MetaData, String, Table, Text, create_engine, text
@@ -73,25 +73,25 @@ def test_refinement_excludes_rejected_email_and_older_hint_uses_its_date():
         id=uuid4(), user_id=user_id, mailbox_connection_id=mailbox_id,
         graph_message_id="rejected", folder_id="inbox", subject="Launch planning notes",
         body_text="The launch planning meeting notes.", body_preview="Launch notes",
-        received_at=datetime(2024, 5, 2, tzinfo=timezone.utc), content_hash="rejected",
-        created_at=datetime(2024, 5, 2, tzinfo=timezone.utc),
-        updated_at=datetime(2024, 5, 2, tzinfo=timezone.utc),
+        received_at=datetime(2024, 5, 2, tzinfo=UTC), content_hash="rejected",
+        created_at=datetime(2024, 5, 2, tzinfo=UTC),
+        updated_at=datetime(2024, 5, 2, tzinfo=UTC),
     )
     older = Email(
         id=uuid4(), user_id=user_id, mailbox_connection_id=mailbox_id,
         graph_message_id="older", folder_id="inbox", subject="Launch planning notes",
         body_text="Earlier launch notes.", body_preview="Earlier notes",
-        received_at=datetime(2024, 5, 1, tzinfo=timezone.utc), content_hash="older",
-        created_at=datetime(2024, 5, 1, tzinfo=timezone.utc),
-        updated_at=datetime(2024, 5, 1, tzinfo=timezone.utc),
+        received_at=datetime(2024, 5, 1, tzinfo=UTC), content_hash="older",
+        created_at=datetime(2024, 5, 1, tzinfo=UTC),
+        updated_at=datetime(2024, 5, 1, tzinfo=UTC),
     )
     newer = Email(
         id=uuid4(), user_id=user_id, mailbox_connection_id=mailbox_id,
         graph_message_id="newer", folder_id="inbox", subject="Launch planning notes",
         body_text="Later launch notes.", body_preview="Later notes",
-        received_at=datetime(2024, 5, 3, tzinfo=timezone.utc), content_hash="newer",
-        created_at=datetime(2024, 5, 3, tzinfo=timezone.utc),
-        updated_at=datetime(2024, 5, 3, tzinfo=timezone.utc),
+        received_at=datetime(2024, 5, 3, tzinfo=UTC), content_hash="newer",
+        created_at=datetime(2024, 5, 3, tzinfo=UTC),
+        updated_at=datetime(2024, 5, 3, tzinfo=UTC),
     )
     criteria = parse_query("launch notes")
 
@@ -140,33 +140,33 @@ def test_attachment_only_match_returns_parent_and_honors_file_type_and_user():
         id=uuid4(), user_id=user_id, mailbox_connection_id=mailbox_id,
         graph_message_id="attachment-parent", folder_id="inbox", subject="Quarterly report",
         body_text="Please review the attached file.", body_preview="Review attached file",
-        received_at=datetime(2024, 5, 2, tzinfo=timezone.utc), content_hash="attachment-parent",
-        created_at=datetime(2024, 5, 2, tzinfo=timezone.utc),
-        updated_at=datetime(2024, 5, 2, tzinfo=timezone.utc),
+        received_at=datetime(2024, 5, 2, tzinfo=UTC), content_hash="attachment-parent",
+        created_at=datetime(2024, 5, 2, tzinfo=UTC),
+        updated_at=datetime(2024, 5, 2, tzinfo=UTC),
     )
     partial_email = Email(
         id=uuid4(), user_id=user_id, mailbox_connection_id=mailbox_id,
         graph_message_id="partial", folder_id="inbox", subject="Blue product update",
         body_text="The blue version is ready.", body_preview="Blue version ready",
-        received_at=datetime(2024, 5, 3, tzinfo=timezone.utc), content_hash="partial",
-        created_at=datetime(2024, 5, 3, tzinfo=timezone.utc),
-        updated_at=datetime(2024, 5, 3, tzinfo=timezone.utc),
+        received_at=datetime(2024, 5, 3, tzinfo=UTC), content_hash="partial",
+        created_at=datetime(2024, 5, 3, tzinfo=UTC),
+        updated_at=datetime(2024, 5, 3, tzinfo=UTC),
     )
     team_email = Email(
         id=uuid4(), user_id=user_id, mailbox_connection_id=mailbox_id,
         graph_message_id="team", folder_id="inbox", subject="Team project update",
         body_text="The team reviewed the project.", body_preview="Team reviewed project",
-        received_at=datetime(2024, 5, 4, tzinfo=timezone.utc), content_hash="team",
-        created_at=datetime(2024, 5, 4, tzinfo=timezone.utc),
-        updated_at=datetime(2024, 5, 4, tzinfo=timezone.utc),
+        received_at=datetime(2024, 5, 4, tzinfo=UTC), content_hash="team",
+        created_at=datetime(2024, 5, 4, tzinfo=UTC),
+        updated_at=datetime(2024, 5, 4, tzinfo=UTC),
     )
     substring_email = Email(
         id=uuid4(), user_id=user_id, mailbox_connection_id=mailbox_id,
         graph_message_id="steam", folder_id="inbox", subject="Steam engine update",
         body_text="The steam engine is ready.", body_preview="Steam engine ready",
-        received_at=datetime(2024, 5, 5, tzinfo=timezone.utc), content_hash="steam",
-        created_at=datetime(2024, 5, 5, tzinfo=timezone.utc),
-        updated_at=datetime(2024, 5, 5, tzinfo=timezone.utc),
+        received_at=datetime(2024, 5, 5, tzinfo=UTC), content_hash="steam",
+        created_at=datetime(2024, 5, 5, tzinfo=UTC),
+        updated_at=datetime(2024, 5, 5, tzinfo=UTC),
     )
     attachment_id, other_user_id = uuid4(), uuid4()
     with Session(engine) as db:

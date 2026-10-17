@@ -2,8 +2,8 @@ import json
 import logging
 import re
 from collections import defaultdict
-from datetime import UTC
-from typing import Annotated
+from datetime import UTC, datetime
+from typing import Annotated, Any
 from uuid import UUID
 
 import anthropic
@@ -34,7 +34,7 @@ def normalize_address(address: str) -> str:
     return normalized
 
 
-def _recipient_matches(recipients: dict | None, address: str) -> bool:
+def _recipient_matches(recipients: dict[str, Any] | None, address: str) -> bool:
     if not isinstance(recipients, dict):
         return False
     for field in ("to", "cc", "bcc"):
@@ -48,15 +48,15 @@ def _recipient_matches(recipients: dict | None, address: str) -> bool:
     return False
 
 
-def _message_datetime(sent_at, received_at):
+def _message_datetime(sent_at: datetime | None, received_at: datetime | None) -> datetime | None:
     return sent_at or received_at
 
 
-def _utc_datetime(value):
+def _utc_datetime(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
-def _matching_contact_emails(db: Session, user_id, address: str) -> list[dict]:
+def _matching_contact_emails(db: Session, user_id: UUID, address: str) -> list[dict[str, Any]]:
     rows = db.execute(
         select(
             Email.id,
@@ -94,8 +94,8 @@ def _matching_contact_emails(db: Session, user_id, address: str) -> list[dict]:
     return matched
 
 
-def _thread_summaries(matched: list[dict]) -> list[dict]:
-    groups: dict[str, list[dict]] = defaultdict(list)
+def _thread_summaries(matched: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for email in matched:
         groups[email["thread_id"]].append(email)
     summaries = []
@@ -116,7 +116,7 @@ def _thread_summaries(matched: list[dict]) -> list[dict]:
     return sorted(summaries, key=lambda thread: thread["last_date"], reverse=True)
 
 
-def _contact_payload(db: Session, user_id, address: str) -> tuple[dict, list[dict]]:
+def _contact_payload(db: Session, user_id: UUID, address: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     matched = _matching_contact_emails(db, user_id, address)
     threads = _thread_summaries(matched)
     email_ids = [email["id"] for email in matched]
@@ -169,7 +169,7 @@ def get_contact(
     user_id: Annotated[UUID, Depends(require_user)],
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
-) -> dict:
+) -> dict[str, Any]:
     enforce_user_rate_limit(user_id, "contacts", settings.rate_limit_contacts_per_min)
     set_user_scope(db, user_id)
     normalized = normalize_address(address)
@@ -188,7 +188,7 @@ def brief_contact(
     _csrf: Annotated[SessionRecord, Depends(require_csrf)],
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
-) -> dict:
+) -> dict[str, Any]:
     enforce_user_rate_limit(user_id, "contacts", settings.rate_limit_contacts_per_min)
     set_user_scope(db, user_id)
     normalized = normalize_address(address)

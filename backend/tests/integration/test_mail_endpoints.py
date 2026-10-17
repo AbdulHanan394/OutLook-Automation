@@ -8,6 +8,7 @@ isolation between two accounts.
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from tests.integration.mailbox_helpers import (
     bulk_seed,
@@ -234,7 +235,7 @@ def test_thread_returns_conversation_messages_oldest_first(client: TestClient, d
     make_email(db, user, mailbox, graph_id="other", conversation_id="conv-2")
 
     sign_in(db, client, user)
-    response = client.get(f"/api/mail/threads/conv-1", params={"mailbox_id": str(mailbox.id)})
+    response = client.get("/api/mail/threads/conv-1", params={"mailbox_id": str(mailbox.id)})
 
     assert response.status_code == 200
     subjects = [m["subject"] for m in response.json()["messages"]]
@@ -284,7 +285,18 @@ def test_render_response_carries_its_own_strict_csp(client: TestClient, db) -> N
     assert "default-src 'none'" in policy
     assert "img-src 'none'" in policy
     assert "form-action 'none'" in policy
-    assert "frame-ancestors 'none'" in policy
+    # 'self', not 'none': the reading pane frames this document on purpose, and
+    # the iframe's empty sandbox supplies the isolation instead.
+    assert "frame-ancestors" in policy
+    assert "frame-ancestors 'none'" not in policy
+    # The reader origin must be the one allowed to frame it -- not 'self', which
+    # would name the API's own origin and forbid the reading pane entirely.
+    from urllib.parse import urlsplit
+
+    from app.config import get_settings
+
+    configured = urlsplit(get_settings().app_base_url)
+    assert configured.port and str(configured.port) in policy
     assert response.headers["x-content-type-options"] == "nosniff"
     assert "no-store" in response.headers["cache-control"]
 
@@ -501,18 +513,55 @@ def test_anonymous_request_is_rejected(client: TestClient, db) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_no_mutating_mail_endpoints_are_exposed() -> None:
-    """Read-only Mail.Read: nothing in the mail API may change message state."""
+def test_no_endpoint_can_mutate_message_state() -> None:
+    """Read-only Mail.Read: nothing may change a message.
+
+    The ask endpoints take POST because they carry a request body, which does
+    not make them mutations. The browsing endpoints must be GET-only, and no
+    endpoint anywhere may expose the verbs that would need Mail.ReadWrite or
+    Mail.Send.
+    """
     from app.main import app
 
     schema = app.openapi()
     mail_paths = [path for path in schema["paths"] if path.startswith("/api/mail/")]
-    assert mail_paths, "expected the mail browsing endpoints"
+    assert mail_paths, "expected the mail endpoints"
 
-    for path in mail_paths:
+    read_only_paths = [
+        path for path in mail_paths
+        if not path.startswith("/api/mail/ask")
+    ]
+    for path in read_only_paths:
         assert set(schema["paths"][path]) == {"get"}, (
             f"{path} exposes a non-GET method; the mailbox grant is Mail.Read"
         )
+
+    # The only non-GET verbs anywhere under /api/mail are the ask body endpoint,
+    # recording a history row, and clearing that history -- none of which touch a
+    # message. The verbs below are exactly what a write grant would enable.
+    write_verbs = {"put", "patch"}
+    for path in mail_paths:
+        methods = set(schema["paths"][path])
+        assert not (methods & write_verbs), f"{path} exposes a message-rewriting verb"
+        if "delete" in methods:
+            # Only the ask history may be deleted, and only for its owner.
+            assert path == "/api/mail/ask/history", (
+                f"{path} exposes DELETE; deleting a message needs Mail.ReadWrite"
+            )
+
+
+def test_ask_endpoint_writes_only_to_ask_history() -> None:
+    """The ask stream must not be able to modify a message row."""
+    from app.main import app
+
+    spec = app.openapi()["paths"]["/api/mail/ask"]["post"]
+    # Nothing in the request body addresses a message id, so there is no way to
+    # name a message to write to.
+    schema_ref = spec.get("requestBody", {})
+    assert schema_ref, "ask should carry a request body"
+    body = str(schema_ref)
+    assert "email_id" not in body
+    assert "message_id" not in body
 
 
 def test_scopes_stay_read_only() -> None:
@@ -526,7 +575,7 @@ def test_scopes_stay_read_only() -> None:
     assert "Mail.ReadWrite" not in settings.ms_scopes
     assert "Mail.Send" not in settings.ms_scopes
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         Settings(
             session_secret="x" * 32,
             token_encryption_key="y" * 32,

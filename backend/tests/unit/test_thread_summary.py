@@ -3,9 +3,9 @@ from uuid import uuid4
 
 import pytest
 
+from app.api.routes_search import EmailSummaryRequest, RefineRequest
 from app.llm.answer import Excerpt, verify_answer
 from app.llm.thread_summary import summary_group_key, summary_source_hash
-from app.api.routes_search import EmailSummaryRequest, RefineRequest
 
 
 def test_thread_summary_cache_keys_are_order_independent_and_invalidate_on_content_change():

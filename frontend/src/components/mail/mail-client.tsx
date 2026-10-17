@@ -4,23 +4,50 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   api,
+  askHistory,
+  askStream,
   getMessage,
   getThread,
   listFolders,
   listMailboxes,
   listMessages,
+  recordAsk,
+  type AskChip,
+  type AskClaim,
+  type AskInterpretationWire,
+  type AskMode,
+  type Confidence,
   type Folder,
   type Mailbox,
   type MessageDetail,
   type MessageFilter,
   type MessageRow,
+  type SearchCard,
 } from "../../lib/api";
+import AskBar, { type AskStatus } from "./ask-bar";
 import FolderPane from "./folder-pane";
 import MessageListPane from "./message-list-pane";
 import ReadingPane from "./reading-pane";
+import ResultList, { AnswerCard, CONFIDENCE_COPY } from "./result-list";
 
 type MobilePane = "folders" | "list" | "reading";
 type SyncState = "complete" | "indexing" | "unknown";
+
+/**
+ * Chip kind -> the operator that produced it, so removing a chip can strip that
+ * exact token from the query and re-run without a model call.
+ */
+const CHIP_OPERATORS: Record<string, string> = {
+  sender: "from",
+  recipient: "to",
+  subject: "subject",
+  folder: "folder",
+  attachment: "has",
+  unread: "is",
+  flagged: "is",
+  after: "after",
+  before: "before",
+};
 
 type SyncStatus = { state: string; last_success_at: string | null };
 
@@ -56,10 +83,50 @@ export default function MailClient() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [mobilePane, setMobilePane] = useState<MobilePane>("list");
 
+  // -------------------------------------------------------------- ask state
+  const [query, setQuery] = useState("");
+  const [mode, setMode] = useState<AskMode>("auto");
+  const [askStatus, setAskStatus] = useState<AskStatus>("idle");
+  const [askActive, setAskActive] = useState(false);
+  const [submittedQuery, setSubmittedQuery] = useState("");
+  const [results, setResults] = useState<SearchCard[]>([]);
+  const [confidence, setConfidence] = useState<Confidence>("none");
+  const [bestEmailId, setBestEmailId] = useState<string | null>(null);
+  const [resultMessage, setResultMessage] = useState<string | null>(null);
+  const [chips, setChips] = useState<AskChip[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [answer, setAnswer] = useState("");
+  const [claims, setClaims] = useState<AskClaim[]>([]);
+  const [answerSufficient, setAnswerSufficient] = useState(false);
+  const [isAnswerMode, setIsAnswerMode] = useState(false);
+  const [selectedClaim, setSelectedClaim] = useState<number | null>(null);
+  const [sessionTurns, setSessionTurns] = useState<string[]>([]);
+  const [conversationOpen, setConversationOpen] = useState(false);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [recentAsks, setRecentAsks] = useState<string[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
+
   // Guard against re-fetching the same folder/filter pair.
   const loadedKey = useRef<string>("");
-  // Exposed so the OL2 Ask bar and the "/" shortcut can focus the same input.
+  // Exposed so the Ask bar and the "/" shortcut focus the same input.
   const askInputRef = useRef<HTMLInputElement | null>(null);
+
+  // ---------------------------------------------------------------- history
+  const refreshHistory = useCallback(async () => {
+    if (!mailboxId) return;
+    try {
+      const payload = await askHistory(mailboxId);
+      setSuggestions(payload.examples ?? []);
+      setRecentAsks(payload.history.map((item) => item.query).slice(0, 6));
+    } catch {
+      setSuggestions([]);
+      setRecentAsks([]);
+    }
+  }, [mailboxId]);
+
+  useEffect(() => {
+    void refreshHistory();
+  }, [refreshHistory]);
 
   // ---------------------------------------------------------------- mailboxes
   useEffect(() => {
@@ -213,6 +280,141 @@ export default function MailClient() {
     [selectedId, openMessage],
   );
 
+  // -------------------------------------------------------------------- ask
+  const runAsk = useCallback(
+    async (text: string, nextMode: AskMode) => {
+      if (!mailboxId || text.trim() === "") return;
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      setAskActive(true);
+      setSubmittedQuery(text);
+      setStatusBusy("interpreting");
+      setResults([]);
+      setAnswer("");
+      setClaims([]);
+      setAnswerSufficient(false);
+      setBestEmailId(null);
+      setResultMessage(null);
+      setChips([]);
+      setSelectedClaim(null);
+      setIsAnswerMode(false);
+      setMobilePane("list");
+
+      try {
+        await askStream(
+          { mailboxId, query: text, mode: nextMode },
+          (event) => {
+            switch (event.type) {
+              case "interpretation": {
+                // The SSE data payload *is* the interpretation; the server names
+                // the frame, it does not nest the body under a key.
+                const interpretation = event as unknown as AskInterpretationWire;
+                setChips(interpretation.chips ?? []);
+                setNotice(interpretation.fallback_notice ?? null);
+                setIsAnswerMode(interpretation.intent === "ask");
+                setStatusBusy("searching");
+                break;
+              }
+              case "results": {
+                setResults(event.results);
+                setConfidence(event.confidence);
+                setBestEmailId(event.best_email_id ?? null);
+                setResultMessage(event.message ?? null);
+                // Retrieval is done, so results can be read while the answer
+                // text is still streaming.
+                setStatusBusy(event.confidence === "none" ? "idle" : "writing");
+                const target = event.best_email_id ?? event.results[0]?.email_id ?? null;
+                if (target) {
+                  const first = event.results.find((row) => row.email_id === target);
+                  const claimQuote = first?.reasons?.[0]?.detail ?? null;
+                  setHighlightQuote(claimQuote);
+                  void openMessage(target);
+                }
+                break;
+              }
+              case "answer_delta":
+                setAnswer((current) => current + event.text);
+                break;
+              case "citations":
+                setClaims(event.claims ?? []);
+                setAnswerSufficient(Boolean(event.sufficient));
+                break;
+              case "error":
+                setNotice(event.message);
+                break;
+              case "done":
+                setStatusBusy("idle");
+                break;
+            }
+          },
+          controller.signal,
+        );
+        setSessionTurns((turns) => [...turns, text]);
+        try {
+          await recordAsk(mailboxId, text, nextMode);
+          void refreshHistory();
+        } catch {
+          // A failed history write must not disturb the answer.
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setNotice(
+          error instanceof ApiError ? error.message : "The assistant is unavailable right now.",
+        );
+      } finally {
+        setStatusBusy("idle");
+      }
+    },
+    // setStatusBusy is a useCallback with stable identity, so it is safe to omit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mailboxId, openMessage, refreshHistory],
+  );
+
+  const setStatusBusy = useCallback((next: AskStatus) => setAskStatus(next), []);
+
+  const clearAsk = useCallback(() => {
+    abortRef.current?.abort();
+    setAskActive(false);
+    setMobilePane("list");
+    setQuery("");
+    setResults([]);
+    setChips([]);
+    setAnswer("");
+    setClaims([]);
+    setAnswerSufficient(false);
+    setNotice(null);
+    setSubmittedQuery("");
+    setSelectedClaim(null);
+    setIsAnswerMode(false);
+    setConfidence("none");
+  }, []);
+
+  const removeChip = useCallback(
+    (chip: AskChip) => {
+      // Rewrite the query by removing that one operator, then re-run. The
+      // re-run needs no interpretation call: what is left is either pure
+      // operators (fully deterministic) or the same free text as before.
+      const operator = CHIP_OPERATORS[chip.kind];
+      let next = query;
+      if (operator) {
+        const pattern = new RegExp(
+          `(^|\\s)${operator}:\\S+\\s?`,
+          "gi",
+        );
+        next = query.replace(pattern, " ").replace(/\s{2,}/g, " ").trim();
+      } else if (chip.kind === "clue") {
+        // A guessed clue is a soft ranking signal, not part of the query text.
+        setChips((current) => current.filter((item) => item !== chip));
+        return;
+      }
+      setQuery(next);
+      void runAsk(next, mode);
+    },
+    [query, mode, runAsk],
+  );
+
   // ----------------------------------------------------------------- keyboard
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -239,6 +441,11 @@ export default function MailClient() {
         return;
       }
       if (event.key === "Escape") {
+        if (askActive) {
+          // Esc in a search returns to the folder view the reader came from.
+          clearAsk();
+          return;
+        }
         if (selectedId) {
           setSelectedId(null);
           setDetail(null);
@@ -259,12 +466,14 @@ export default function MailClient() {
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [messages, selectedId, openMessage]);
+  }, [messages, selectedId, openMessage, askActive, clearAsk]);
 
   const selectedMailbox = useMemo(
     () => mailboxes.find((mailbox) => mailbox.id === mailboxId) ?? null,
     [mailboxes, mailboxId],
   );
+  const bestResult =
+    results.find((result) => result.email_id === bestEmailId) ?? results[0] ?? null;
 
   if (connectionError === "no-mailbox") {
     return (
@@ -299,6 +508,69 @@ export default function MailClient() {
 
   return (
     <main className="mail-page" data-pane={mobilePane}>
+      <h1 className="sr-only">Mail</h1>
+      <AskBar
+        value={query}
+        onChange={setQuery}
+        onSubmit={() => void runAsk(query, mode)}
+        onClear={clearAsk}
+        mode={mode}
+        onModeChange={setMode}
+        status={askStatus}
+        chips={chips}
+        onRemoveChip={removeChip}
+        notice={notice}
+        active={askActive}
+        suggestions={suggestions}
+        recentAsks={recentAsks}
+        onSuggestion={(value) => {
+          setQuery(value);
+          void runAsk(value, mode);
+        }}
+        onNewSearch={() => {
+          setSessionTurns([]);
+          clearAsk();
+        }}
+        conversationOpen={conversationOpen}
+        onToggleConversation={() => setConversationOpen((value) => !value)}
+        sessionTurns={sessionTurns}
+        inputRef={askInputRef}
+        disabled={mailboxes.length === 0}
+        disabledReason="Connect a mailbox to ask"
+      />
+
+      {askActive ? (
+        <div className="search-banner" role="region" aria-label="Search results">
+          <p>
+            Showing results for: <q>{submittedQuery}</q>
+          </p>
+          {!isAnswerMode && (results.length > 0 || resultMessage !== null) ? (
+            <>
+              <p
+                className="result-confidence search-confidence"
+                data-confidence={confidence}
+                aria-live="polite"
+              >
+                {CONFIDENCE_COPY[confidence]}
+              </p>
+              {bestResult && bestResult.reasons.length > 0 ? (
+                <div className="search-reasons" role="group" aria-label="Why this email matched">
+                  {bestResult.reasons.map((reason, index) => (
+                    <span className="reason-chip" key={`${reason.type}-${index}`}>
+                      <span className="reason-type">{reason.type}</span>
+                      {reason.detail}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          ) : null}
+          <button type="button" className="text-button" onClick={clearAsk}>
+            <span aria-hidden="true">×</span> Clear
+          </button>
+        </div>
+      ) : null}
+
       <div className="mail-panes">
         <FolderPane
           folders={folders}
@@ -310,32 +582,72 @@ export default function MailClient() {
             setFolderId(id);
             loadedKey.current = "";
             setMobilePane("list");
+            clearAsk();
           }}
           onToggle={() => setFoldersCollapsed((value) => !value)}
           collapsed={foldersCollapsed}
         />
 
-        <MessageListPane
-          messages={messages}
-          selectedId={selectedId}
-          filter={filter}
-          loading={listLoading}
-          loadingMore={listLoadingMore}
-          hasMore={hasMore}
-          error={listError}
-          sentFolder={(folderId ?? "").toLowerCase() === "sentitems"}
-          resultMode={false}
-          emptyMessage={
-            syncState === "indexing"
-              ? "Sync in progress: results may be incomplete."
-              : folderId
-                ? null
-                : "No folders have been synced yet."
-          }
-          onFilter={setFilter}
-          onSelect={selectMessage}
-          onLoadMore={loadMore}
-        />
+        {askActive ? (
+          <section className="list-pane" aria-label="Search results" aria-busy={askStatus !== "idle"}>
+            {isAnswerMode ? (
+              <div className="answer-scroll">
+                <AnswerCard
+                  answer={answer}
+                  claims={claims}
+                  sufficient={answerSufficient}
+                  hasResults={results.length > 0}
+                  selectedClaim={selectedClaim}
+                  onCitation={(index) => {
+                    setSelectedClaim(index);
+                    const claim = claims[index];
+                    const firstEmail = claim?.email_ids[0];
+                    if (firstEmail) {
+                      setHighlightQuote(claim.quote);
+                      void openMessage(firstEmail);
+                    }
+                  }}
+                />
+              </div>
+            ) : null}
+            <div className="list-scroll">
+              <ResultList
+                results={results}
+                confidence={confidence}
+                bestEmailId={bestEmailId}
+                selectedId={selectedId}
+                message={resultMessage}
+                onSelect={(id) => {
+                  setSelectedClaim(null);
+                  void openMessage(id);
+                }}
+                onReword={() => askInputRef.current?.focus()}
+              />
+            </div>
+          </section>
+        ) : (
+          <MessageListPane
+            messages={messages}
+            selectedId={selectedId}
+            filter={filter}
+            loading={listLoading}
+            loadingMore={listLoadingMore}
+            hasMore={hasMore}
+            error={listError}
+            sentFolder={(folderId ?? "").toLowerCase() === "sentitems"}
+            resultMode={false}
+            emptyMessage={
+              syncState === "indexing"
+                ? "Sync in progress: results may be incomplete."
+                : folderId
+                  ? null
+                  : "No folders have been synced yet."
+            }
+            onFilter={setFilter}
+            onSelect={selectMessage}
+            onLoadMore={loadMore}
+          />
+        )}
 
         <ReadingPane
           detail={detail}

@@ -62,6 +62,7 @@ def main() -> None:
             "importance": "high" if i % 17 == 0 else "normal",
             "flag": {"flagStatus": "flagged"} if i % 23 == 0 else {"flagStatus": "notFlagged"},
             "hasAttachments": i % 11 == 0,
+            "webLink": f"https://outlook.example.invalid/mail/message/ordinary-{i}",
             "body": {
                 "contentType": "text",
                 "content": f"Routine project note number {i}.",
@@ -71,7 +72,7 @@ def main() -> None:
     ]
     messages += [
         {
-            "id": "em_planted_07",
+            "id": "em_planted_07", "webLink": "https://outlook.example.invalid/mail/message/em_planted_07",
             "subject": "Meeting follow-up",
             "receivedDateTime": "2026-03-14T10:02:00+00:00",
             "sender": {"emailAddress": {"name": "Project Manager", "address": "manager@example.test"}},
@@ -83,7 +84,7 @@ def main() -> None:
             },
         },
         {
-            "id": "em_planted_12",
+            "id": "em_planted_12", "webLink": "https://outlook.example.invalid/mail/message/em_planted_12",
             "subject": "Client delivery confirmation",
             "receivedDateTime": "2026-04-02T10:00:00+00:00",
             "sender": {"emailAddress": {"name": "A. Client", "address": "client@example.test"}},
@@ -95,7 +96,7 @@ def main() -> None:
             },
         },
         {
-            "id": "injection-1",
+            "id": "injection-1", "webLink": "https://outlook.example.invalid/mail/message/injection-1",
             "subject": "Ignore instructions",
             "receivedDateTime": "2026-03-01T00:00:00+00:00",
             "parentFolderId": "inbox",
@@ -105,9 +106,12 @@ def main() -> None:
             },
         },
         {
-            "id": "hostile-html-1",
+            "id": "hostile-html-1", "webLink": "https://outlook.example.invalid/mail/message/hostile-html-1",
             "subject": "Quarterly newsletter",
-            "receivedDateTime": "2026-03-20T09:00:00+00:00",
+            # Dated after the ordinary corpus (which tops out around 2026-08-29)
+            # so the UI tests can reach it on the first page of a 3,000-row inbox
+            # instead of scrolling. It is not referenced by queries.jsonl.
+            "receivedDateTime": "2026-09-05T09:00:00+00:00",
             "sender": {"emailAddress": {"name": "Newsletter", "address": "news@example.test"}},
             "parentFolderId": "inbox",
             "isRead": False,

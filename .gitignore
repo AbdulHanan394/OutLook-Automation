@@ -8,3 +8,7 @@ node_modules/
 .next/
 coverage.xml
 htmlcov/
+*.tsbuildinfo
+frontend/test-results/
+frontend/playwright-report/
+eval/.demo_session.json

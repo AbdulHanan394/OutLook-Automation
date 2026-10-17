@@ -2,6 +2,7 @@ import base64
 import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from urllib.parse import urlencode
 from uuid import UUID
 
@@ -28,7 +29,7 @@ def authorization_url(settings: Settings, state: str, challenge: str, nonce: str
     params = {"client_id": settings.ms_client_id, "response_type": "code", "redirect_uri": redirect_uri, "response_mode": "query", "scope": scopes, "state": state, "nonce": nonce, "code_challenge": challenge, "code_challenge_method": "S256", "prompt": "select_account"}
     return f"https://login.microsoftonline.com/{settings.ms_tenant}/oauth2/v2.0/authorize?{urlencode(params)}"
 
-def exchange_code(settings: Settings, code: str, verifier: str, scopes: list[str], redirect_uri: str) -> dict:
+def exchange_code(settings: Settings, code: str, verifier: str, scopes: list[str], redirect_uri: str) -> dict[str, Any]:
     """Exchange the authorization code with PKCE at Microsoft's token endpoint."""
     import httpx
 
@@ -55,10 +56,10 @@ def exchange_code(settings: Settings, code: str, verifier: str, scopes: list[str
     if response.is_error or "error" in result:
         detail = result.get("error_description", result.get("error", "token exchange failed"))
         raise ValueError(detail)
-    return result
+    return cast(dict[str, Any], result)
 
 
-def refresh_access_token(settings: Settings, refresh_token: str) -> dict:
+def refresh_access_token(settings: Settings, refresh_token: str) -> dict[str, Any]:
     """Exchange an encrypted-at-rest delegated refresh token for Graph access."""
     import httpx
 
@@ -80,10 +81,10 @@ def refresh_access_token(settings: Settings, refresh_token: str) -> dict:
         raise ValueError("Microsoft refresh-token exchange failed")
     if not result.get("access_token"):
         raise ValueError("Microsoft did not return an access token")
-    return result
+    return cast(dict[str, Any], result)
 
 
-def microsoft_profile(access_token: str) -> dict:
+def microsoft_profile(access_token: str) -> dict[str, Any]:
     """Return the minimal Graph profile fields used to identify an account."""
     import httpx
 
@@ -94,10 +95,10 @@ def microsoft_profile(access_token: str) -> dict:
     )
     if response.is_error:
         raise ValueError("Microsoft Graph could not return the signed-in account")
-    return response.json()
+    return cast(dict[str, Any], response.json())
 
 
-def profile_email(claims: dict, profile: dict | None = None) -> str | None:
+def profile_email(claims: dict[str, Any], profile: dict[str, Any] | None = None) -> str | None:
     """Find a usable address, tolerating optional OIDC email claims."""
     candidates = [claims.get("preferred_username"), claims.get("email")]
     if profile:

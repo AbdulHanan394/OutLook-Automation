@@ -2,6 +2,7 @@ import asyncio
 import random
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from typing import Any, cast
 
 import httpx
 
@@ -31,16 +32,16 @@ class GraphClient:
                     return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
                 except (TypeError, ValueError, OverflowError):
                     pass
-        return min(30, 2**attempt + random.random())
+        return float(min(30, 2**attempt + random.random()))
 
-    async def get(self, url: str, *, params: dict[str, str] | None = None) -> dict:
+    async def get(self, url: str, *, params: dict[str, str] | None = None) -> dict[str, Any]:
         target = url if url.startswith("http") else f"{self.base_url}{url}"
         async with httpx.AsyncClient(timeout=30) as client:
             for attempt in range(5):
                 response = await client.get(target, params=params, headers={"Authorization": f"Bearer {self.token}", "Prefer": 'IdType="ImmutableId"'})
                 if response.status_code not in (429, 500, 502, 503, 504):
                     response.raise_for_status()
-                    return response.json()
+                    return cast(dict[str, Any], response.json())
                 if attempt == 4:
                     raise GraphError(
                         f"Graph request failed with status {response.status_code}"

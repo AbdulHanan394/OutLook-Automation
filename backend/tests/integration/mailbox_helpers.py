@@ -7,6 +7,7 @@ plain builders and ``conftest.py`` wires them up.
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -52,6 +53,7 @@ def make_email(
     mailbox: MailboxConnection,
     *,
     graph_id: str,
+    email_id: UUID | None = None,
     folder: str = "inbox",
     subject: str = "Subject",
     sender_name: str = "Sender",
@@ -71,6 +73,7 @@ def make_email(
 ) -> Email:
     stamp = received_at or datetime.now(UTC)
     email = Email(
+        id=email_id or uuid.uuid4(),
         user_id=user.id,
         mailbox_connection_id=mailbox.id,
         graph_message_id=graph_id,
@@ -147,16 +150,23 @@ def bulk_seed(
 
 
 def sign_in(db: Session, client, user: User) -> None:
-    """Attach a session cookie for ``user`` without going through OAuth."""
+    """Attach a session cookie and the matching CSRF header for ``user``.
+
+    Both are needed: the frontend reads the token from the cookie and echoes it
+    in ``X-CSRF-Token``, and ``require_csrf`` compares the two against the
+    session row.
+    """
     token = f"test-{uuid.uuid4().hex}"
+    csrf = f"csrf-{uuid.uuid4().hex}"
     db.add(
         SessionRecord(
             id=token,
             user_id=user.id,
-            csrf_token="test-csrf-token",
+            csrf_token=csrf,
             expires_at=datetime.now(UTC) + timedelta(days=1),
         )
     )
     db.commit()
     client.cookies.set("email_finder_session", token)
-    client.cookies.set("csrf_token", "test-csrf-token")
+    client.cookies.set("csrf_token", csrf)
+    client.headers.update({"X-CSRF-Token": csrf})

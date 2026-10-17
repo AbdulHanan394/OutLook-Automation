@@ -1,12 +1,19 @@
 from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
-from app.auth.microsoft import authorization_url, create_state, exchange_code, microsoft_profile, profile_email
+from app.auth.microsoft import (
+    authorization_url,
+    create_state,
+    exchange_code,
+    microsoft_profile,
+    profile_email,
+)
 from app.config import Settings, get_settings
-from app.db import OAuthState, User, get_db
+from app.db import OAuthState, SessionRecord, User, get_db
 from app.security.csrf import require_csrf
-from app.security.sessions import COOKIE_NAME, new_session, require_session
+from app.security.sessions import COOKIE_NAME, new_session
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 LOGIN_SCOPES = "openid profile email https://graph.microsoft.com/User.Read"
@@ -46,6 +53,6 @@ def callback(state: str, code: str, db: Session = Depends(get_db), settings: Set
 
 
 @router.post("/logout")
-def logout(response: Response, session=Depends(require_csrf), db: Session = Depends(get_db)) -> dict[str, bool]:
+def logout(response: Response, session: SessionRecord = Depends(require_csrf), db: Session = Depends(get_db)) -> dict[str, bool]:
     db.delete(session); db.commit(); response.delete_cookie(COOKIE_NAME); response.delete_cookie("csrf_token")
     return {"ok": True}

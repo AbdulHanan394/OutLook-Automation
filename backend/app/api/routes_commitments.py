@@ -1,5 +1,5 @@
 import logging
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import anthropic
@@ -36,7 +36,7 @@ def list_commitments(
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
     status: Annotated[Literal["open", "done", "dismissed", "all"], Query()] = "open",
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     enforce_user_rate_limit(user_id, "commitments", settings.rate_limit_commitments_per_min)
     set_user_scope(db, user_id)
     mailbox = db.scalar(select(MailboxConnection).where(
@@ -85,7 +85,7 @@ def extract_commitments(
     _csrf: Annotated[SessionRecord, Depends(require_csrf)],
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
-) -> dict:
+) -> dict[str, Any]:
     enforce_user_rate_limit(user_id, "commitments", settings.rate_limit_commitments_per_min)
     set_user_scope(db, user_id)
     mailbox = db.scalar(select(MailboxConnection).where(

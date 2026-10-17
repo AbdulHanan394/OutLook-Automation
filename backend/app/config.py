@@ -93,4 +93,7 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    # ``session_secret`` and ``token_encryption_key`` are required by the model
+    # but are supplied by pydantic-settings from the environment, which the type
+    # checker cannot see.
+    return Settings()  # type: ignore[call-arg]

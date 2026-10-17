@@ -1,4 +1,5 @@
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -130,7 +131,7 @@ def keyword_search(
     negative_similarity_threshold: float = 0.35,
     feedback_signals: dict[str, int] | None = None,
     feedback_tie_break_boost: float = 0.0,
-    file_types: list[str] | None = None,
+    file_types: Sequence[str] | None = None,
 ) -> tuple[str, list[Email], dict[UUID, list[MatchReason]]]:
     query = select(Email).where(Email.user_id == user_id, Email.mailbox_connection_id == mailbox_id, ~Email.is_deleted)
     if excluded_ids:
@@ -266,8 +267,8 @@ def keyword_search(
     usable_rejections = [email for email in rejected_emails or [] if email.subject or email.body_text]
     if usable_rejections:
         reranked = []
-        for email_id, score in fused:
-            candidate = by_id.get(email_id)
+        for result_id, score in fused:
+            candidate = by_id.get(result_id)
             if candidate is None:
                 continue
             candidate_text = " ".join(filter(None, [candidate.subject, candidate.body_text]))
@@ -275,7 +276,7 @@ def keyword_search(
                 candidate_text, " ".join(filter(None, [rejected.subject, rejected.body_text]))
             ) for rejected in usable_rejections)
             penalty = similarity if similarity >= negative_similarity_threshold else 0.0
-            reranked.append((email_id, score * (1.0 - penalty)))
+            reranked.append((result_id, score * (1.0 - penalty)))
         fused = sorted(reranked, key=lambda item: item[1], reverse=True)
     if feedback_signals and feedback_tie_break_boost:
         fused = feedback_tie_break(fused, feedback_signals, feedback_tie_break_boost)

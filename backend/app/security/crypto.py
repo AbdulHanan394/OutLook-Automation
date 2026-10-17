@@ -1,4 +1,5 @@
 import base64
+import binascii
 from dataclasses import dataclass
 
 from cryptography.fernet import Fernet, MultiFernet
@@ -26,5 +27,6 @@ class TokenCipher:
     def valid_key(key: str) -> bool:
         try:
             return len(base64.urlsafe_b64decode(key)) == 32
-        except Exception:
+        except (binascii.Error, TypeError, ValueError):
+            # Any decoding failure just means "not a usable key".
             return False

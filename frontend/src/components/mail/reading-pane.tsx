@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { messageRenderUrl, type MessageDetail, type MessageRow } from "../../lib/api";
 import { formatStamp } from "./message-list-pane";
 
@@ -32,6 +32,27 @@ export default function ReadingPane({
   const [images, setImages] = useState(false);
   const [showQuoted, setShowQuoted] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+
+  // The iframe is an opaque origin: it cannot see data-theme, so the chosen
+  // theme is read here and passed to the render endpoint explicitly.
+  useEffect(() => {
+    const read = () =>
+      setTheme(document.documentElement.dataset.theme === "dark" ? "dark" : "light");
+    read();
+    const observer = new MutationObserver(read);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    return () => observer.disconnect();
+  }, []);
+
+  // A different message means a different privacy decision.
+  useEffect(() => {
+    setImages(false);
+    setShowQuoted(false);
+  }, [detail?.id]);
 
   if (error) {
     return (
@@ -70,7 +91,7 @@ export default function ReadingPane({
   const renderUrl =
     mailboxId === null
       ? null
-      : messageRenderUrl(mailboxId, detail.id, { images, quoted: showQuoted });
+      : messageRenderUrl(mailboxId, detail.id, { images, quoted: showQuoted, theme });
 
   const copyLink = async () => {
     if (!detail.web_link) return;
@@ -172,7 +193,7 @@ export default function ReadingPane({
       <div className="message-body">
         {renderUrl ? (
           <iframe
-            key={`${detail.id}:${images ? "img" : "noimg"}:${showQuoted ? "q" : "noq"}`}
+            key={`${detail.id}:${images ? "img" : "noimg"}:${showQuoted ? "q" : "noq"}:${theme}`}
             className="body-frame"
             title={`Message body: ${detail.subject || "no subject"}`}
             // Empty sandbox: no scripts, no same-origin, no forms, no top-level

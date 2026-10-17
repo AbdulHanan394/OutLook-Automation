@@ -1,7 +1,7 @@
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
 import anthropic
@@ -9,6 +9,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
@@ -20,6 +21,7 @@ from app.db import (
     SearchFeedback,
     SearchResultEvent,
     SearchSession,
+    SessionRecord,
     ThreadSummaryCache,
     get_db,
     set_user_scope,
@@ -158,7 +160,7 @@ def related_emails(db: Session, user_id: UUID, mailbox_id: UUID, email: Email) -
     return sorted(members.values(), key=lambda member: member.received_at, reverse=True)
 
 
-def serialize(email: Email, reasons: list[MatchReason], preview: str | None = None, thread_count: int = 1) -> dict:
+def serialize(email: Email, reasons: list[MatchReason], preview: str | None = None, thread_count: int = 1) -> dict[str, Any]:
     sender = " ".join(filter(None, [email.sender_name, f"<{email.sender_address}>" if email.sender_address else None]))
     reason_payload = [{"type": reason.type, "detail": reason.detail} for reason in reasons]
     return {
@@ -192,7 +194,7 @@ def recent_feedback_signals(db: Session, user_id: UUID, mailbox_id: UUID, retent
 
 
 @router.post("/search/email")
-def search(request: SearchRequest, user_id: UUID = Depends(require_user), _=Depends(require_csrf), db: Session = Depends(get_db), settings: Settings = Depends(get_settings)) -> dict:
+def search(request: SearchRequest, user_id: UUID = Depends(require_user), _csrf: SessionRecord = Depends(require_csrf), db: Session = Depends(get_db), settings: Settings = Depends(get_settings)) -> dict[str, Any]:
     set_user_scope(db, user_id)
     mailbox = db.scalar(
         select(MailboxConnection).where(
@@ -272,7 +274,7 @@ def search(request: SearchRequest, user_id: UUID = Depends(require_user), _=Depe
     return response
 
 @router.post("/search/{search_id}/refine")
-def refine_search(search_id: UUID, request: RefineRequest, user_id: UUID = Depends(require_user), _=Depends(require_csrf), db: Session = Depends(get_db), settings: Settings = Depends(get_settings)) -> dict:
+def refine_search(search_id: UUID, request: RefineRequest, user_id: UUID = Depends(require_user), _csrf: SessionRecord = Depends(require_csrf), db: Session = Depends(get_db), settings: Settings = Depends(get_settings)) -> dict[str, Any]:
     set_user_scope(db, user_id)
     search_session = db.scalar(
         select(SearchSession)
@@ -320,11 +322,11 @@ def refine_search(search_id: UUID, request: RefineRequest, user_id: UUID = Depen
     new_ids = set(request.rejected_email_ids) - existing_ids
     if request.rejected_email_ids and not new_ids:
         raise HTTPException(400, "Select an email that has not already been rejected")
-    updated = db.execute(update(SearchSession).where(
+    updated = cast("CursorResult[Any]", db.execute(update(SearchSession).where(
         SearchSession.id == search_id,
         SearchSession.user_id == user_id,
         SearchSession.refinement_count < 5,
-    ).values(refinement_count=SearchSession.refinement_count + 1))
+    ).values(refinement_count=SearchSession.refinement_count + 1)))
     if updated.rowcount != 1:
         raise HTTPException(429, "This search has reached the five-refinement limit. Start a new search.")
     db.add_all(SearchFeedback(user_id=user_id, search_id=search_id, email_id=email_id) for email_id in new_ids)
@@ -400,7 +402,7 @@ def refine_search(search_id: UUID, request: RefineRequest, user_id: UUID = Depen
 def search_feedback_config(
     user_id: UUID = Depends(require_user),
     settings: Settings = Depends(get_settings),
-) -> dict:
+) -> dict[str, Any]:
     return {
         "enabled": settings.feedback_ranking_enabled,
         "retention_days": settings.feedback_history_retention_days,
@@ -412,10 +414,10 @@ def record_search_feedback(
     search_id: UUID,
     request: ResultFeedbackRequest,
     user_id: UUID = Depends(require_user),
-    _=Depends(require_csrf),
+    _csrf: SessionRecord = Depends(require_csrf),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
-) -> dict:
+) -> dict[str, Any]:
     if not settings.feedback_ranking_enabled:
         raise HTTPException(403, "Search feedback ranking is disabled")
     set_user_scope(db, user_id)
@@ -470,11 +472,11 @@ def record_search_feedback(
 @router.delete("/search/feedback/history")
 def clear_search_feedback_history(
     user_id: UUID = Depends(require_user),
-    _=Depends(require_csrf),
+    _csrf: SessionRecord = Depends(require_csrf),
     db: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     set_user_scope(db, user_id)
-    deleted = db.execute(delete(SearchResultEvent).where(SearchResultEvent.user_id == user_id))
+    deleted = cast("CursorResult[Any]", db.execute(delete(SearchResultEvent).where(SearchResultEvent.user_id == user_id)))
     db.commit()
     return {"deleted": deleted.rowcount or 0}
 
@@ -484,7 +486,7 @@ def list_saved_searches(
     mailbox_id: UUID,
     user_id: UUID = Depends(require_user),
     db: Session = Depends(get_db),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     set_user_scope(db, user_id)
     mailbox_exists = db.scalar(
         select(MailboxConnection.id).where(
@@ -515,9 +517,9 @@ def list_saved_searches(
 def save_search(
     request: SaveSearchRequest,
     user_id: UUID = Depends(require_user),
-    _=Depends(require_csrf),
+    _csrf: SessionRecord = Depends(require_csrf),
     db: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     set_user_scope(db, user_id)
     mailbox_exists = db.scalar(
         select(MailboxConnection.id).where(
@@ -545,7 +547,7 @@ def save_search(
 def delete_saved_search(
     saved_search_id: UUID,
     user_id: UUID = Depends(require_user),
-    _=Depends(require_csrf),
+    _csrf: SessionRecord = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> None:
     set_user_scope(db, user_id)
@@ -563,7 +565,7 @@ def list_pinned_emails(
     mailbox_id: UUID,
     user_id: UUID = Depends(require_user),
     db: Session = Depends(get_db),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     set_user_scope(db, user_id)
     mailbox_exists = db.scalar(
         select(MailboxConnection.id).where(
@@ -601,9 +603,9 @@ def list_pinned_emails(
 def pin_email(
     request: PinEmailRequest,
     user_id: UUID = Depends(require_user),
-    _=Depends(require_csrf),
+    _csrf: SessionRecord = Depends(require_csrf),
     db: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     set_user_scope(db, user_id)
     email = db.scalar(
         select(Email).where(
@@ -636,7 +638,7 @@ def pin_email(
 def unpin_email(
     email_id: UUID,
     user_id: UUID = Depends(require_user),
-    _=Depends(require_csrf),
+    _csrf: SessionRecord = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> None:
     set_user_scope(db, user_id)
@@ -650,7 +652,7 @@ def unpin_email(
 
 
 @router.get("/emails/{email_id}")
-def get_email(email_id: UUID, user_id: UUID = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+def get_email(email_id: UUID, user_id: UUID = Depends(require_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     email = db.scalar(select(Email).where(Email.id == email_id, Email.user_id == user_id, ~Email.is_deleted))
     if not email: raise HTTPException(404, "Email not found")
     return {"email_id": str(email.id), "subject": email.subject, "sender": email.sender_name, "received_at": email.received_at.isoformat(), "body_preview": email.body_preview, "conversation_id": email.conversation_id, "outlook_url": email.web_link}
@@ -661,7 +663,7 @@ def get_email_thread(
     email_id: UUID,
     user_id: UUID = Depends(require_user),
     db: Session = Depends(get_db),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     set_user_scope(db, user_id)
     email = db.scalar(
         select(Email).where(
@@ -691,10 +693,10 @@ def summarize_email_thread(
     email_id: UUID,
     request: EmailSummaryRequest = EmailSummaryRequest(),
     user_id: UUID = Depends(require_user),
-    _=Depends(require_csrf),
+    _csrf: SessionRecord = Depends(require_csrf),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
-) -> dict:
+) -> dict[str, Any]:
     set_user_scope(db, user_id)
     email = db.scalar(
         select(Email)

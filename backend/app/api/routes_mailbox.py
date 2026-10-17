@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -31,7 +32,7 @@ def owned_mailbox(mailbox_id: UUID, user_id: UUID, db: Session) -> MailboxConnec
 
 
 @router.post("/outlook/connect")
-def connect(user_id: UUID = Depends(require_user), _=Depends(require_csrf), db: Session = Depends(get_db), settings: Settings = Depends(get_settings)) -> dict[str, str]:
+def connect(user_id: UUID = Depends(require_user), _: None = Depends(require_csrf), db: Session = Depends(get_db), settings: Settings = Depends(get_settings)) -> dict[str, str]:
     state, challenge, nonce = create_state(db, user_id, "connect_mailbox"); db.commit()
     scopes = settings.ms_scopes.split()
     if IDENTITY_SCOPE not in scopes:
@@ -97,7 +98,7 @@ def outlook_callback(state: str, code: str | None = None, error: str | None = No
 
 
 @router.get("/mailboxes/{mailbox_id}/sync")
-def sync_status(mailbox_id: UUID, user_id: UUID = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+def sync_status(mailbox_id: UUID, user_id: UUID = Depends(require_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     mailbox = owned_mailbox(mailbox_id, user_id, db)
     jobs = list(db.scalars(select(IndexingJob).where(IndexingJob.mailbox_connection_id == mailbox.id)))
     email_count = db.scalar(select(func.count()).select_from(Email).where(Email.mailbox_connection_id == mailbox.id, ~Email.is_deleted)) or 0
@@ -120,7 +121,7 @@ def list_mailboxes(user_id: UUID = Depends(require_user), db: Session = Depends(
 
 
 @router.post("/mailboxes/{mailbox_id}/sync", status_code=202)
-def start_sync(mailbox_id: UUID, user_id: UUID = Depends(require_user), _=Depends(require_csrf), db: Session = Depends(get_db)) -> dict[str, str]:
+def start_sync(mailbox_id: UUID, user_id: UUID = Depends(require_user), _: None = Depends(require_csrf), db: Session = Depends(get_db)) -> dict[str, str]:
     mailbox = owned_mailbox(mailbox_id, user_id, db)
     job = IndexingJob(user_id=user_id, mailbox_connection_id=mailbox.id, type="sync_folder", payload={"folders": mailbox.index_scope.get("folders", [])})
     db.add(job); db.commit()
@@ -128,18 +129,18 @@ def start_sync(mailbox_id: UUID, user_id: UUID = Depends(require_user), _=Depend
 
 
 @router.post("/mailboxes/{mailbox_id}/consent/ai")
-def ai_consent(mailbox_id: UUID, user_id: UUID = Depends(require_user), _=Depends(require_csrf), db: Session = Depends(get_db)) -> dict[str, bool]:
+def ai_consent(mailbox_id: UUID, user_id: UUID = Depends(require_user), _: None = Depends(require_csrf), db: Session = Depends(get_db)) -> dict[str, bool]:
     mailbox = owned_mailbox(mailbox_id, user_id, db); mailbox.external_ai_consent_at = datetime.now(UTC); db.commit()
     return {"accepted": True}
 
 
 @router.delete("/mailboxes/{mailbox_id}/data", status_code=202)
-def delete_data(mailbox_id: UUID, user_id: UUID = Depends(require_user), _=Depends(require_csrf), db: Session = Depends(get_db)) -> dict:
+def delete_data(mailbox_id: UUID, user_id: UUID = Depends(require_user), _: None = Depends(require_csrf), db: Session = Depends(get_db)) -> dict[str, str]:
     mailbox = owned_mailbox(mailbox_id, user_id, db); job = IndexingJob(user_id=user_id, mailbox_connection_id=mailbox.id, type="delete_data", payload={}); db.add(job); db.commit()
     return {"job_id": str(job.id), "state": "queued"}
 
 @router.delete("/mailboxes/{mailbox_id}", status_code=202)
-def disconnect(mailbox_id: UUID, delete_data: bool = False, user_id: UUID = Depends(require_user), _=Depends(require_csrf), db: Session = Depends(get_db)) -> dict:
+def disconnect(mailbox_id: UUID, delete_data: bool = False, user_id: UUID = Depends(require_user), _: None = Depends(require_csrf), db: Session = Depends(get_db)) -> dict[str, str]:
     mailbox = owned_mailbox(mailbox_id, user_id, db); mailbox.status = "disconnecting"
     job = IndexingJob(user_id=user_id, mailbox_connection_id=mailbox.id, type="disconnect", payload={"delete_data": delete_data}); db.add(job); db.commit()
     return {"job_id": str(job.id), "state": "queued"}

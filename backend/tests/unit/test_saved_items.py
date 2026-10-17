@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -27,7 +27,7 @@ def test_saved_searches_and_pins_are_user_scoped_and_cascade_on_cleanup(monkeypa
     user_id, other_user_id = uuid4(), uuid4()
     mailbox_id, other_mailbox_id = uuid4(), uuid4()
     email_id = uuid4()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     with Session(engine) as db:
         db.add_all([
@@ -62,13 +62,13 @@ def test_saved_searches_and_pins_are_user_scoped_and_cascade_on_cleanup(monkeypa
         saved = routes_search.save_search(
             routes_search.SaveSearchRequest(mailbox_id=mailbox_id, name="Budget", query="budget"),
             user_id=user_id,
-            _=None,
+            _csrf=None,
             db=db,
         )
         pinned = routes_search.pin_email(
             routes_search.PinEmailRequest(mailbox_id=mailbox_id, email_id=email_id),
             user_id=user_id,
-            _=None,
+            _csrf=None,
             db=db,
         )
         assert pinned == {"email_id": str(email_id), "pinned": True}
@@ -83,7 +83,7 @@ def test_saved_searches_and_pins_are_user_scoped_and_cascade_on_cleanup(monkeypa
             routes_search.pin_email(
                 routes_search.PinEmailRequest(mailbox_id=other_mailbox_id, email_id=email_id),
                 user_id=other_user_id,
-                _=None,
+                _csrf=None,
                 db=db,
             )
         assert pin_error.value.status_code == 404

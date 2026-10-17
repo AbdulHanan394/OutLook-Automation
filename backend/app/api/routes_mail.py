@@ -312,6 +312,22 @@ def get_message(
     }
 
 
+def _frame_ancestor(app_base_url: str) -> str:
+    """CSP frame-ancestors value naming only the reader application."""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(app_base_url)
+    except ValueError:
+        return "'none'"
+    if not parts.scheme or not parts.netloc:
+        return "'none'"
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return f"http://{host} https://{host}"
+
+
 def _address_entry(value: object) -> dict[str, str | None]:
     if not isinstance(value, dict):
         return {"name": None, "address": None}
@@ -329,6 +345,7 @@ def render_message(
     mailbox_id: UUID = Query(),
     images: bool = Query(default=False),
     quoted: bool = Query(default=False),
+    theme: Literal["light", "dark"] = Query(default="light"),
     user_id: UUID = Depends(require_user),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -377,23 +394,49 @@ def render_message(
     # document that actually reaches a browser, and defence in depth is cheap.
     safe = sanitize_email_html(content, allow_images=images)
 
+    # frame-ancestors names the app origin, not 'self': the reader runs on a
+    # different origin than this API, so 'self' would forbid the very framing the
+    # reading pane performs. Naming APP_BASE_URL precisely still blocks every
+    # other site from framing someone's mail, and the iframe's empty sandbox
+    # means the app holds an opaque origin even when it does frame it. The
+    # session cookie is SameSite=Lax, so a cross-site frame carries nothing.
+    ancestors = _frame_ancestor(settings.app_base_url)
     policy = (
         "default-src 'none'; style-src 'unsafe-inline'; img-src https: http: data:; "
-        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        f"base-uri 'none'; form-action 'none'; frame-ancestors {ancestors}"
         if images
         else (
             "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; "
-            "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+            f"base-uri 'none'; form-action 'none'; frame-ancestors {ancestors}"
         )
     )
+    # The iframe is an opaque origin, so it inherits no colour scheme and cannot
+    # see the app's data-theme attribute. The reader's chosen theme is passed
+    # explicitly rather than guessed from prefers-color-scheme, which would
+    # disagree whenever the app theme differs from the OS setting.
+    palette = (
+        {"ink": "#171516", "paper": "#f8f7f7", "muted": "#777174", "rule": "#d4d1d2"}
+        if theme == "light"
+        else {"ink": "#f3f0f1", "paper": "#1c1a1b", "muted": "#a49da0", "rule": "#393536"}
+    )
+    style = (
+        "body{margin:0;padding:14px;font-family:inherit;"
+        f"background:{palette['paper']};color:{palette['ink']}}}"
+        f"a{{color:{palette['ink']}}}"
+        f"blockquote{{margin:0;padding-left:12px;border-left:3px solid {palette['rule']}}}"
+        "img{max-width:100%;height:auto}"
+        "pre{white-space:pre-wrap;word-break:break-word;font-family:inherit}"
+        "table{max-width:100%}"
+        f"[data-blocked-image]{{display:inline-block;min-width:24px;min-height:24px;"
+        f"border:1px dashed {palette['muted']};vertical-align:middle}}"
+    )
     document = (
-        "<!doctype html><html><head><meta charset=\"utf-8\">"
-        f"<meta http-equiv=\"Content-Security-Policy\" content=\"{policy}\">"
-        "<style>body{margin:0;padding:14px;font-family:inherit;color:inherit}"
-        "img{max-width:100%;height:auto}pre{white-space:pre-wrap;word-break:break-word}"
-        "table{max-width:100%}blockquote{margin:0;padding-left:12px;border-left:3px solid #8886}"
-        "[data-blocked-image]{display:inline-block;min-width:24px;min-height:24px;"
-        "border:1px dashed #9996}</style></head><body>"
+        '<!doctype html><html><head><meta charset="utf-8">'
+        # Second layer: a document policy intersects with the header policy, so
+        # both have to agree for anything to load.
+        f'<meta http-equiv="Content-Security-Policy" content="{policy}">'
+        '<meta name="color-scheme" content="' + theme + '">'
+        f"<style>{style}</style></head><body>"
         f"{safe}</body></html>"
     )
     return Response(

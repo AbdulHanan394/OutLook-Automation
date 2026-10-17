@@ -105,7 +105,10 @@ def extract_attachment_text(file_type: str, content: bytes) -> tuple[str, str]:
             text = content.decode("cp1252")
         except UnicodeDecodeError:
             return "", "failed_parse"
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # pypdf, python-docx and openpyxl each raise their own exception types
+        # for damaged or encrypted files. A sync pass must not die on one bad
+        # attachment, so every parser failure becomes "failed_parse".
         return "", "failed_parse"
 
     text = text[:MAX_EXTRACTED_CHARS].strip()

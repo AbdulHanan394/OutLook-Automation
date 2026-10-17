@@ -178,11 +178,12 @@ export function getMessage(mailboxId: string, emailId: string): Promise<MessageD
 export function messageRenderUrl(
   mailboxId: string,
   emailId: string,
-  options: { images?: boolean; quoted?: boolean } = {},
+  options: { images?: boolean; quoted?: boolean; theme?: "light" | "dark" } = {},
 ): string {
   const query = new URLSearchParams({ mailbox_id: mailboxId });
   if (options.images) query.set("images", "true");
   if (options.quoted) query.set("quoted", "true");
+  if (options.theme) query.set("theme", options.theme);
   return `${API}/api/mail/messages/${encodeURIComponent(emailId)}/render?${query.toString()}`;
 }
 
@@ -237,14 +238,163 @@ export type AskInterpretation = {
 };
 
 export type AskEvent =
-  | { type: "interpretation"; interpretation: AskInterpretation }
-  | { type: "results"; results: SearchCard[]; confidence: Confidence; message?: string }
+  | { type: "interpretation"; interpretation: AskInterpretationWire }
+  | {
+      type: "results";
+      results: SearchCard[];
+      confidence: Confidence;
+      best_email_id?: string;
+      message?: string;
+    }
   | { type: "answer_delta"; text: string }
   | {
       type: "citations";
-      claims: { text: string; type: "explicit" | "inferred"; email_ids: string[]; quote: string }[];
+      sufficient: boolean;
+      claims: AskClaim[];
+      response_type?: string | null;
+      timeline?: { date: string | null; email_id: string; subject: string; sender: string; text: string; quote: string }[];
     }
-  | { type: "done" }
+  | { type: "done"; used_model?: boolean; path?: string }
   | { type: "error"; message: string; fallback?: boolean };
 
-export type AskHistoryItem = { id: string; query: string; mode: AskMode; created_at: string };
+export type AskHistoryItem = {
+  id: string;
+  query: string;
+  mode: AskMode;
+  created_at: string;
+};
+
+export type AskChip = {
+  kind: string;
+  label: string;
+  value: string;
+  guessed: boolean;
+};
+
+export type AskInterpretationWire = {
+  intent: "find" | "ask";
+  rewrites: string[];
+  soft_clues: string[];
+  chips: AskChip[];
+  source: string;
+  used_model: boolean;
+  fallback_notice: string | null;
+  fallback?: boolean;
+  filters: {
+    sender: string | null;
+    after: string | null;
+    before: string | null;
+    folder: string | null;
+    has_attachment: boolean;
+    unread: boolean | null;
+  };
+  unknown_operators: string[];
+};
+
+export type AskClaim = {
+  text: string;
+  type: "explicit" | "inferred";
+  email_ids: string[];
+  quote: string;
+};
+
+/**
+ * Streams the Ask endpoint.
+ *
+ * EventSource cannot POST, so this reads the body incrementally and dispatches
+ * typed events as they arrive. Callers get results the moment retrieval finishes
+ * rather than when the answer text completes.
+ */
+export async function askStream(
+  params: { mailboxId: string; query: string; mode: AskMode; sessionId?: string },
+  onEvent: (event: AskEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${API}/api/mail/ask`, {
+    method: "POST",
+    credentials: "include",
+    signal,
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrf(),
+      Accept: "text/event-stream",
+    },
+    body: JSON.stringify({
+      mailbox_id: params.mailboxId,
+      query: params.query,
+      mode: params.mode,
+      session_id: params.sessionId ?? null,
+    }),
+  });
+
+  if (!response.ok) {
+    let message = "The AI assistant is unavailable right now.";
+    if (response.status === 429) message = "Too many requests. Please wait a moment.";
+    else if (response.status === 409) message = "Turn on AI processing in Settings first.";
+    else {
+      try {
+        const body = await response.json();
+        const detail = body?.error?.message ?? body?.detail;
+        if (typeof detail === "string" && detail) message = detail;
+      } catch {
+        /* keep the default */
+      }
+    }
+    throw new ApiError(response.status, message, response.headers.get("X-Request-Id"));
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new ApiError(500, "The assistant returned no stream.", null);
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const dispatch = (block: string) => {
+    let name = "";
+    let data = "";
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event:")) name = line.slice(6).trim();
+      else if (line.startsWith("data:")) data += line.slice(5).trim();
+    }
+    if (!name || !data) return;
+    try {
+      const payload = JSON.parse(data) as Record<string, unknown>;
+      // The server names the frame in the SSE `event:` field; the data payload
+      // itself has no discriminator, so it is injected here.
+      onEvent({ ...payload, type: name } as unknown as AskEvent);
+    } catch {
+      /* a malformed frame must not kill the stream */
+    }
+  };
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let split: number;
+      while ((split = buffer.indexOf("\n\n")) !== -1) {
+        dispatch(buffer.slice(0, split));
+        buffer = buffer.slice(split + 2);
+      }
+    }
+    if (buffer.trim()) dispatch(buffer);
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+export async function askHistory(mailboxId: string): Promise<{ history: AskHistoryItem[]; examples: string[] }> {
+  return api(`/api/mail/ask/history?mailbox_id=${encodeURIComponent(mailboxId)}`);
+}
+
+export async function recordAsk(mailboxId: string, query: string, mode: AskMode): Promise<void> {
+  await api("/api/mail/ask/history", {
+    method: "POST",
+    body: JSON.stringify({ mailbox_id: mailboxId, query, mode }),
+  });
+}
+
+export async function clearAskHistory(): Promise<void> {
+  await api("/api/mail/ask/history", { method: "DELETE" });
+}

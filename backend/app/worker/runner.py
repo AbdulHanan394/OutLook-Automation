@@ -2,12 +2,14 @@ import asyncio
 import logging
 import time
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import anthropic
 import httpx
 from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from app.auth.microsoft import refresh_access_token
 from app.config import get_settings
@@ -29,7 +31,7 @@ def claim_one() -> IndexingJob | None:
         return job
 
 
-def run_sync_job(db, job: IndexingJob) -> int:
+def run_sync_job(db: Session, job: IndexingJob) -> int:
     settings = get_settings()
     mailbox = db.get(MailboxConnection, job.mailbox_connection_id)
     if not mailbox or not mailbox.encrypted_refresh_token:
@@ -74,7 +76,7 @@ def run_sync_job(db, job: IndexingJob) -> int:
     return total
 
 
-def mark_failed(job_id, error: Exception) -> None:
+def mark_failed(job_id: UUID, error: Exception) -> None:
     with SessionLocal.begin() as db:
         job = db.get(IndexingJob, job_id)
         if job:
@@ -139,7 +141,9 @@ def run_forever() -> None:
                     current.status, current.finished_at = "succeeded", datetime.now(UTC)
                     current.error_code = None
                     db.commit()
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
+            # A single malformed job must never stop the worker loop; it is
+            # recorded against the job and the loop moves on.
             mark_failed(job.id, error)
 
 

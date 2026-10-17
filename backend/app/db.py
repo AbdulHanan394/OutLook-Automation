@@ -1,5 +1,6 @@
 from collections.abc import Generator
 from datetime import UTC, date, datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -24,22 +25,32 @@ from sqlalchemy.types import UserDefinedType
 from app.config import get_settings
 
 
+def _now_utc() -> datetime:
+    """Timezone-aware ``onupdate`` value.
+
+    ``datetime.utcnow`` is deprecated and returns a naive value, which would be
+    reinterpreted in the session timezone by a ``DateTime(timezone=True)``
+    column.
+    """
+    return datetime.now(UTC)
+
+
 class Base(DeclarativeBase):
     pass
 
 
-class VectorType(UserDefinedType):
+class VectorType(UserDefinedType[Any]):
     """PostgreSQL pgvector column type without requiring a separate ORM package."""
 
     cache_ok = True
 
-    def get_col_spec(self, **kwargs) -> str:
+    def get_col_spec(self, **kwargs: Any) -> str:
         return "vector"
 
 
 class Timestamped:
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"), onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"), onupdate=_now_utc)
 
 
 class User(Base):
@@ -81,7 +92,7 @@ class MailboxConnection(Base, Timestamped):
     granted_scopes: Mapped[str] = mapped_column(Text)
     encrypted_refresh_token: Mapped[bytes | None] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
-    index_scope: Mapped[dict] = mapped_column(JSONB)
+    index_scope: Mapped[dict[str, Any]] = mapped_column(JSONB)
     consented_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
     external_ai_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -101,7 +112,7 @@ class Email(Base, Timestamped):
     subject: Mapped[str | None] = mapped_column(Text)
     sender_name: Mapped[str | None] = mapped_column(Text)
     sender_address: Mapped[str | None] = mapped_column(Text)
-    recipients: Mapped[dict | None] = mapped_column(JSONB)
+    recipients: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     commitment_extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -131,7 +142,7 @@ class SearchSession(Base):
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     mailbox_connection_id: Mapped[UUID] = mapped_column(ForeignKey("mailbox_connections.id", ondelete="CASCADE"), index=True)
-    query_json: Mapped[dict] = mapped_column(JSONB)
+    query_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
     result_email_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
     refinement_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
@@ -153,7 +164,7 @@ class SavedSearch(Base):
     mailbox_connection_id: Mapped[UUID] = mapped_column(ForeignKey("mailbox_connections.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(80))
     query: Mapped[str] = mapped_column(Text)
-    filters: Mapped[dict] = mapped_column(JSONB, default=dict)
+    filters: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), server_default=text("now()")
     )
@@ -192,7 +203,7 @@ class ThreadSummaryCache(Base):
     mailbox_connection_id: Mapped[UUID] = mapped_column(ForeignKey("mailbox_connections.id", ondelete="CASCADE"), index=True)
     group_key: Mapped[str] = mapped_column(String(64))
     source_hash: Mapped[str] = mapped_column(String(64))
-    summary_json: Mapped[dict] = mapped_column(JSONB)
+    summary_json: Mapped[dict[str, Any]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
 
 
@@ -222,6 +233,27 @@ class ClaudeDailyUsage(Base):
     usage_date: Mapped[date] = mapped_column(primary_key=True)
     call_count: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), server_default=text("CURRENT_TIMESTAMP"))
+
+
+class AskHistory(Base):
+    """Recent Ask bar submissions, so the bar can offer what was asked before.
+
+    Per-user only, and read directly with an explicit ``user_id`` predicate as
+    well as through the row-level-security policy, matching every other table.
+    """
+
+    __tablename__ = "ask_history"
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    query: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str] = mapped_column(String(8), default="auto")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), server_default=text("now()")
+    )
 
 
 class Attachment(Base):
@@ -263,7 +295,7 @@ class IndexingJob(Base):
     user_id: Mapped[UUID] = mapped_column(index=True)
     mailbox_connection_id: Mapped[UUID] = mapped_column(ForeignKey("mailbox_connections.id", ondelete="CASCADE"), index=True)
     type: Mapped[str] = mapped_column(String(32))
-    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     status: Mapped[str] = mapped_column(String(16), default="queued")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))

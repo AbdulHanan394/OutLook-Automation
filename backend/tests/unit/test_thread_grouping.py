@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -37,7 +37,7 @@ def test_thread_expansion_is_transitive_and_user_scoped(monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine, tables=[Email.__table__])
     user_id, other_user_id, mailbox_id = uuid4(), uuid4(), uuid4()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     emails = [
         Email(
             id=uuid4(), user_id=user_id, mailbox_connection_id=mailbox_id,

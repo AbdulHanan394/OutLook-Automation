@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -12,7 +12,7 @@ FIXTURES = json.loads((Path(__file__).parents[1] / "fixtures" / "search_clues.js
 
 @pytest.mark.parametrize("fixture", FIXTURES)
 def test_soft_clue_eval_fixtures_preserve_explicit_filters(fixture):
-    from_date = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    from_date = datetime(2024, 1, 1, tzinfo=UTC)
     criteria = parse_query(fixture["question"], sender="alex@example.test", from_dt=from_date, folder="inbox")
     clues = extract_search_clues(fixture["payload"])
     augmented = add_soft_clues(criteria, clues)

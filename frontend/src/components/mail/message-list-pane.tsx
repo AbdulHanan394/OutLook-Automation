@@ -167,60 +167,57 @@ export default function MessageListPane({
           <>
             {grouped.map((group) => (
               <section key={group.key} className="message-group" aria-label={group.label}>
-                <h3 className="date-header" data-sticky="true">
+                <h2 className="date-header" data-sticky="true">
                   {group.label}
-                </h3>
-                <ul className="message-list">
+                </h2>
+                <ul className="message-list" role="listbox" aria-label={`${group.label} messages`}>
                   {group.rows.map((row) => {
                     const who = sentFolder
                       ? `to ${row.sender_name || row.sender_address || "unknown"}`
                       : row.sender_name || row.sender_address || "(unknown sender)";
                     return (
-                      <li key={row.id}>
-                        <div
-                          className="message-row"
-                          data-unread={row.is_read ? "false" : "true"}
-                          data-selected={row.id === selectedId ? "true" : "false"}
-                          data-message-id={row.id}
-                          role="option"
-                          aria-selected={row.id === selectedId}
-                          tabIndex={row.id === selectedId ? 0 : -1}
-                          onClick={() => onSelect(row.id)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter" || event.key === " ") {
-                              event.preventDefault();
-                              onSelect(row.id);
-                            }
-                          }}
-                        >
-                          <span className="unread-dot" aria-hidden="true" />
-                          <span className="message-main">
-                            <span className="message-topline">
-                              <span className="message-sender">{who}</span>
-                              {row.importance === "high" ? (
-                                <span className="importance-mark" title="High importance">
-                                  <span aria-hidden="true">!</span>
-                                  <span className="sr-only">High importance</span>
-                                </span>
-                              ) : null}
-                              <time className="message-stamp" dateTime={row.received_at}>
-                                {formatStamp(row.received_at, now)}
-                              </time>
-                            </span>
-                            <span className="message-subject">
-                              {row.subject || "(no subject)"}
-                            </span>
-                            <span className="message-preview">
-                              {row.preview ? row.preview.replace(/\s+/g, " ").trim() : "(no preview)"}
-                            </span>
+                      <li
+                        key={row.id}
+                        className="message-row"
+                        data-unread={row.is_read ? "false" : "true"}
+                        data-selected={row.id === selectedId ? "true" : "false"}
+                        data-message-id={row.id}
+                        role="option"
+                        aria-selected={row.id === selectedId}
+                        tabIndex={row.id === selectedId ? 0 : -1}
+                        onClick={() => onSelect(row.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            onSelect(row.id);
+                          }
+                        }}
+                      >
+                        <span className="unread-dot" aria-hidden="true" />
+                        <span className="message-main">
+                          <span className="message-topline">
+                            <span className="message-sender">{who}</span>
+                            {row.importance === "high" ? (
+                              <span className="importance-mark" title="High importance">
+                                <span aria-hidden="true">!</span>
+                                <span className="sr-only">High importance</span>
+                              </span>
+                            ) : null}
+                            <time className="message-stamp" dateTime={row.received_at}>
+                              {formatStamp(row.received_at, now)}
+                            </time>
                           </span>
-                          {row.has_attachments ? (
-                            <span className="attachment-mark" title="Has attachments">
-                              <span aria-hidden="true">@</span>
-                              <span className="sr-only">Has attachments</span>
-                            </span>
-                          ) : null}
-                        </div>
+                          <span className="message-subject">{row.subject || "(no subject)"}</span>
+                          <span className="message-preview">
+                            {row.preview ? row.preview.replace(/\s+/g, " ").trim() : "(no preview)"}
+                          </span>
+                        </span>
+                        {row.has_attachments ? (
+                          <span className="attachment-mark" title="Has attachments">
+                            <span aria-hidden="true">@</span>
+                            <span className="sr-only">Has attachments</span>
+                          </span>
+                        ) : null}
                       </li>
                     );
                   })}

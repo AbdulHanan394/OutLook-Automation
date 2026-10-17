@@ -172,6 +172,11 @@ def test_groq_endpoint_setting_accepts_canonical_and_legacy_name(monkeypatch, en
     monkeypatch.setenv("SESSION_SECRET", "test-session-secret")
     monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", "test-token-encryption-key")
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    # The legacy branch is only meaningful when the canonical name is unset, and
+    # both are often exported in a developer's shell. Start from a known state so
+    # the assertion does not depend on the ambient environment.
+    monkeypatch.delenv("GROQ_MODELS_ENDPOINT", raising=False)
+    monkeypatch.delenv("GQROQ_MODELS_ENDPOINT", raising=False)
     monkeypatch.setenv(endpoint_env, "https://groq.example/v1")
 
     settings = Settings(

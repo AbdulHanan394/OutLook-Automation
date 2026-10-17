@@ -9,12 +9,28 @@ dependencies = [
   "python-json-logger>=3.2", "pypdf>=5.0", "python-docx>=1.1", "openpyxl>=3.1"
 ]
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.8", "mypy>=1.13", "pip-audit>=2.7", "bandit>=1.7"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.8", "mypy>=1.13", "types-openpyxl>=3.1", "pip-audit>=2.7", "bandit>=1.7"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
+target-version = "py312"
+[tool.ruff.lint]
+# Pinned explicitly rather than relying on ruff's defaults: the default set
+# widened between 0.8 and 0.17, which silently turned a passing gate red.
+# E4/E7/E9/F is what the original gate enforced; the rest catch real defects.
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "BLE", "RUF"]
+ignore = [
+  # FastAPI resolves dependencies by inspecting argument defaults, so
+  # `Depends()`/`Query()` in defaults is the framework's required idiom.
+  "B008",
+  # The codebase is written in a deliberately dense style (long SQL literals
+  # and single-line `with` bodies). Reflowing it would bury the logic in a
+  # diff without changing behaviour, so these stay unenforced.
+  "E701",
+  "E702",
+]
 [tool.mypy]
 strict = true
 files = ["app"]

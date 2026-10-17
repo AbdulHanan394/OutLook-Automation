@@ -1,0 +1,144 @@
+{
+  "pipeline": "ask-bar",
+  "feature": "find",
+  "corpus_size": 200,
+  "settings": {
+    "max_alternatives": 5,
+    "conf_margin": 0.015,
+    "conf_min_score": 0.01
+  },
+  "queries": 20,
+  "top1_recall": 0.35,
+  "top3_recall": 0.35,
+  "top5_recall": 0.35,
+  "mrr": 0.35,
+  "returned_nothing": 13,
+  "confidence_counts": {
+    "high": 6,
+    "low": 1,
+    "none": 13
+  },
+  "false_confident_rate": 0.0,
+  "per_query": [
+    {
+      "query": "project deadline budget approval",
+      "rank": 1,
+      "confidence": "high",
+      "returned": 1
+    },
+    {
+      "query": "the email where the revised budget was approved",
+      "rank": 1,
+      "confidence": "low",
+      "returned": 1
+    },
+    {
+      "query": "meeting follow-up about the deadline",
+      "rank": 1,
+      "confidence": "high",
+      "returned": 1
+    },
+    {
+      "query": "what did the project manager say about the deadline",
+      "rank": null,
+      "confidence": "none",
+      "returned": 0
+    },
+    {
+      "query": "budget approval email from March",
+      "rank": null,
+      "confidence": "none",
+      "returned": 0
+    },
+    {
+      "query": "client delivery confirmation",
+      "rank": 1,
+      "confidence": "high",
+      "returned": 1
+    },
+    {
+      "query": "the email about what date we would deliver to the client",
+      "rank": null,
+      "confidence": "none",
+      "returned": 0
+    },
+    {
+      "query": "delivery date agreed with the client in April",
+      "rank": null,
+      "confidence": "none",
+      "returned": 0
+    },
+    {
+      "query": "conditional on budget approval delivery",
+      "rank": 1,
+      "confidence": "high",
+      "returned": 1
+    },
+    {
+      "query": "what did the client say about delivery",
+      "rank": null,
+      "confidence": "none",
+      "returned": 0
+    },
+    {
+      "query": "quarterly newsletter with hostile markup",
+      "rank": 1,
+      "confidence": "high",
+      "returned": 1
+    },
+    {
+      "query": "the newsletter with the tracking pixel",
+      "rank": null,
+      "confidence": "none",
+      "returned": 0
+    },
+    {
+      "query": "newsletter from the newsletter sender",
+      "rank": null,
+      "confidence": "none",
+      "returned": 0
+    },
+    {
+      "query": "email where the project deadline is approved once the revised budget receives approval",
+      "rank": null,
+      "confidence": "none",
+      "returned": 0
+    },
+    {
+      "query": "we will deliver on 30 April conditional on budget",
+      "rank": 1,
+      "confidence": "high",
+      "returned": 1
+    },
+    {
+      "query": "find the email about the marketing campaign",
+      "rank": null,
+      "confidence": "none",
+      "returned": 0
+    },
+    {
+      "query": "show me the thread where the client confirmed delivery",
+      "rank": null,
+      "confidence": "none",
+      "returned": 0
+    },
+    {
+      "query": "which email confirmed the delivery date",
+      "rank": null,
+      "confidence": "none",
+      "returned": 0
+    },
+    {
+      "query": "locate the message about the revised budget approval deadline",
+      "rank": null,
+      "confidence": "none",
+      "returned": 0
+    },
+    {
+      "query": "the follow-up email about the project deadline in March",
+      "rank": null,
+      "confidence": "none",
+      "returned": 0
+    }
+  ]
+}

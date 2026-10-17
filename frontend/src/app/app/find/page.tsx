@@ -167,6 +167,9 @@ export default function Find() {
       return;
     }
     loadSavedItems().catch(() => setRefinementError("Could not load saved searches and pinned emails."));
+    // Deliberately keyed on mailboxId alone: loadSavedItems is recreated each
+    // render and reads mailboxId from the same closure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mailboxId]);
 
   async function runSearch(searchQuery: string, filters: Record<string, unknown> = {}) {

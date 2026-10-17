@@ -1,8 +1,10 @@
 from uuid import UUID
+
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.embeddings.voyage import VoyageClient
+
 
 async def vector_search(db: Session, client: VoyageClient, *, user_id: UUID, mailbox_id: UUID, query: str, limit: int) -> list[str]:
     vector = (await client.embed([query], "query")).vectors[0]

@@ -18,7 +18,7 @@ MESSAGE_SELECT = "id,internetMessageId,conversationId,parentFolderId,subject,sen
 ATTACHMENT_SELECT = "id,name,contentType,size,isInline,lastModifiedDateTime,@odata.type"
 logger = logging.getLogger(__name__)
 
-def _address(value: dict | None) -> tuple[str | None, str | None]:
+def _address(value: dict[str, Any] | None) -> tuple[str | None, str | None]:
     address = (value or {}).get("emailAddress", {})
     return address.get("name"), address.get("address")
 
@@ -43,7 +43,7 @@ def _categories(message: dict[str, Any]) -> list[str]:
         return []
     return [str(item)[:64] for item in raw if isinstance(item, str)][:10]
 
-def upsert_message(db: Session, *, user_id: UUID, mailbox_id: UUID, folder_id: str, message: dict, target_tokens: int, overlap_tokens: int) -> bool:
+def upsert_message(db: Session, *, user_id: UUID, mailbox_id: UUID, folder_id: str, message: dict[str, Any], target_tokens: int, overlap_tokens: int) -> bool:
     graph_id = message["id"]
     existing = db.scalar(select(Email).where(
         Email.user_id == user_id,
@@ -173,8 +173,8 @@ async def index_message_attachments(
                 Attachment.id.in_(attachment_ids),
             ))
         return
-    url = f"/me/messages/{graph_message_id}/attachments"
-    params = {"$select": ATTACHMENT_SELECT}
+    url: str | None = f"/me/messages/{graph_message_id}/attachments"
+    params: dict[str, str] | None = {"$select": ATTACHMENT_SELECT}
     chunk_index = max(
         db.scalars(select(EmailChunk.chunk_index).where(
             EmailChunk.user_id == user_id,
@@ -286,7 +286,8 @@ async def index_message_attachments(
                     attachment_id=record.id,
                 ))
                 chunk_index += 1
-        url, params = page.get("@odata.nextLink"), None
+        params = None
+        url = page.get("@odata.nextLink")
     stale_query = select(Attachment.id).where(
         Attachment.user_id == user_id,
         Attachment.mailbox_connection_id == mailbox_id,

@@ -13,6 +13,8 @@ themselves, preserving exact-phrase intent.
 
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy import ColumnElement, func, or_
 
 from app.retrieval.parse import required_query_terms
@@ -41,7 +43,7 @@ def query_units(*texts: str | None) -> list[str]:
     return units[:MAX_UNITS]
 
 
-def build_queries(units: list[str]) -> list[ColumnElement]:
+def build_queries(units: list[str]) -> list[ColumnElement[Any]]:
     """One ``plainto_tsquery`` per unit.
 
     Input still goes through ``plainto_tsquery``, so it stays stemmed,
@@ -52,7 +54,7 @@ def build_queries(units: list[str]) -> list[ColumnElement]:
 
 
 def build_match_filter(
-    vector: ColumnElement, queries: list[ColumnElement]
+    vector: ColumnElement[Any], queries: list[ColumnElement[Any]]
 ) -> ColumnElement[bool] | None:
     """Match a row when *any* unit matches: ``tsv @@ q1 OR tsv @@ q2``.
 
@@ -66,7 +68,7 @@ def build_match_filter(
     return clauses[0] if len(clauses) == 1 else or_(*clauses)
 
 
-def build_rank_query(queries: list[ColumnElement]) -> ColumnElement | None:
+def build_rank_query(queries: list[ColumnElement[Any]]) -> ColumnElement[Any] | None:
     """Combine units into one tsquery for ``ts_rank``.
 
     Here ``||`` is the tsquery OR operator, so ``q1 || q2`` is a single valid

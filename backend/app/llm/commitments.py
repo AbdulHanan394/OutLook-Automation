@@ -214,7 +214,8 @@ def extract_for_folder(
         if stopped_reason in {"daily_cap", "provider_spend_cap", "provider_error"}:
             break
         for candidate in candidates:
-            quote_hash = hashlib.sha256(re.sub(r"\s+", " ", candidate["quote"]).strip().encode()).hexdigest()
+            quote_text = candidate.get("quote") or ""
+            quote_hash = hashlib.sha256(re.sub(r"\s+", " ", quote_text).strip().encode()).hexdigest()
             existing = db.scalar(select(Commitment.id).where(
                 Commitment.user_id == user_id,
                 Commitment.email_id == email.id,
