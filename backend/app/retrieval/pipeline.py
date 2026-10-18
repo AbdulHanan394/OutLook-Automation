@@ -11,7 +11,24 @@ from sqlalchemy.orm import Session
 from app.db import Attachment, Email, EmailChunk
 from app.retrieval.confidence import confidence
 from app.retrieval.fusion import reciprocal_rank_fusion
-from app.retrieval.parse import Criteria, required_query_terms
+from app.retrieval.parse import SEARCH_STOP_WORDS, Criteria, required_query_terms
+from app.retrieval.relevance import (
+    apply_relevance_cutoff,
+    contains_phrase,
+    contains_term,
+    lexical_score,
+)
+
+__all__ = [
+    "MatchReason",
+    "collapse_ranked_emails",
+    "contains_phrase",
+    "contains_term",
+    "feedback_tie_break",
+    "keyword_search",
+    "match_reasons",
+    "token_similarity",
+]
 
 
 @dataclass(frozen=True)
@@ -20,19 +37,21 @@ class MatchReason:
     detail: str
 
 
-def contains_term(text: str, term: str) -> bool:
-    return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text, re.IGNORECASE) is not None
-
-
-def contains_phrase(text: str, phrase: str) -> bool:
-    words = re.findall(r"\w+", phrase)
-    if not words:
-        return False
-    pattern = r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)"
-    return re.search(pattern, text, re.IGNORECASE) is not None
+def _quoted(terms: Sequence[str]) -> str:
+    return ", ".join(f'"{term}"' for term in terms)
 
 
 def match_reasons(email: Email, criteria: Criteria) -> list[MatchReason]:
+    """Why this message matched, as chips a reader can act on.
+
+    Two rules keep the chips honest enough to be worth reading:
+
+    * stop words are dropped. "The message mentions \\"the\\"" is true of every
+      email ever sent, and a reason that cannot discriminate is not a reason.
+    * one chip per lane. A subject matching three query words is one fact about
+      that message, not three, and three near-identical sentences buried the
+      sender and date chips that actually explained the result.
+    """
     subject = (email.subject or "").lower()
     body = (email.body_text or "").lower()
     sender = " ".join(filter(None, [email.sender_name, email.sender_address])).lower()
@@ -42,11 +61,19 @@ def match_reasons(email: Email, criteria: Criteria) -> list[MatchReason]:
         if contains_phrase(f"{subject} {body}", phrase):
             reasons.append(MatchReason("phrase", f'Includes the phrase "{phrase}".'))
 
-    for term in criteria.terms:
-        if contains_term(subject, term):
-            reasons.append(MatchReason("subject", f'The subject mentions "{term}".'))
-        elif contains_term(body, term):
-            reasons.append(MatchReason("phrase", f'The message mentions "{term}".'))
+    terms = [term for term in criteria.terms if term not in SEARCH_STOP_WORDS]
+    subject_hits = [term for term in terms if contains_term(subject, term)]
+    # A term already reported against the subject is not repeated against the
+    # body: "Budget" in a subject titled "Budget review" is one match, not two.
+    body_hits = [
+        term
+        for term in terms
+        if term not in subject_hits and contains_term(body, term)
+    ]
+    if subject_hits:
+        reasons.append(MatchReason("subject", f"The subject mentions {_quoted(subject_hits)}."))
+    if body_hits:
+        reasons.append(MatchReason("phrase", f"The message mentions {_quoted(body_hits)}."))
 
     if criteria.sender and criteria.sender.lower() in sender:
         reasons.append(MatchReason("sender", f'Sender matches "{criteria.sender}".'))
@@ -282,30 +309,33 @@ def keyword_search(
         fused = feedback_tie_break(fused, feedback_signals, feedback_tie_break_boost)
     if required_terms or required_phrases:
         subject_by_id = {str(email.id): (email.subject or "") for email in emails}
+        relevance_scores: dict[str, float] = {}
+        subject_rank: dict[str, int] = {}
+        for email in emails:
+            key = str(email.id)
+            subject = subject_by_id[key]
+            attachments = " ".join(attachment_text.get(email.id, []))
+            relevance_scores[key] = lexical_score(
+                subject,
+                email_text[email.id],
+                required_terms,
+                required_phrases,
+                attachment_text=attachments,
+            )
+            subject_rank[key] = sum(
+                contains_term(subject, term) for term in required_terms
+            ) + sum(contains_phrase(subject, phrase) for phrase in required_phrases)
 
         def relevance(item: tuple[str, float]) -> tuple[int, int, float]:
             email_id, fused_score = item
-            identifier = UUID(email_id)
-            subject = subject_by_id[email_id]
-            body = email_text[identifier]
-            attachments = " ".join(attachment_text.get(identifier, []))
-            subject_hits = sum(contains_term(subject, term) for term in required_terms)
-            body_hits = sum(contains_term(body, term) for term in required_terms)
-            attachment_hits = sum(contains_term(attachments, term) for term in required_terms)
-            subject_phrases = sum(contains_phrase(subject, phrase) for phrase in required_phrases)
-            body_phrases = sum(contains_phrase(body, phrase) for phrase in required_phrases)
-            attachment_phrases = sum(contains_phrase(attachments, phrase) for phrase in required_phrases)
-            score = (
-                subject_hits * 3
-                + body_hits
-                + attachment_hits * 0.75
-                + subject_phrases * 5
-                + body_phrases * 2
-                + attachment_phrases
-            )
-            return subject_hits + subject_phrases, int(score * 100), fused_score
+            return subject_rank[email_id], int(relevance_scores[email_id] * 100), fused_score
 
         fused.sort(key=relevance, reverse=True)
+        # The cutoff runs after ordering so "the best" means the row the reader
+        # actually sees at the top, not the row that happened to be retrieved
+        # first. It runs before collapse_ranked_emails so a thread whose members
+        # were all cut cannot contribute a group representative.
+        fused = apply_relevance_cutoff(fused, lambda item: relevance_scores[item[0]])
     fused = collapse_ranked_emails(fused, by_id)
     selected = [by_id[email_id] for email_id, _ in fused[:limit] if email_id in by_id]
     scores = [score for _, score in fused]

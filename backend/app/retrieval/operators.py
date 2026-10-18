@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
+from app.mail.folders import folder_display_name
+
 MAX_OPERATOR_LENGTH = 40
 MAX_VALUE_LENGTH = 200
 
@@ -219,7 +221,16 @@ def describe(operators: Operators) -> list[dict[str, str | bool]]:
     for value in operators.subjects:
         chips.append({"kind": "subject", "label": f'Subject "{value}"', "value": value, "guessed": False})
     for value in operators.folders:
-        chips.append({"kind": "folder", "label": f"Folder {value}", "value": value, "guessed": False})
+        # The chip shows the folder's name, never its alias or Graph id: the
+        # reader typed a folder, not a storage key.
+        chips.append(
+            {
+                "kind": "folder",
+                "label": f"Folder {folder_display_name(value)}",
+                "value": value,
+                "guessed": False,
+            }
+        )
     if operators.has_attachment:
         chips.append({"kind": "attachment", "label": "Has attachment", "value": "true", "guessed": False})
     if operators.is_unread is not None:

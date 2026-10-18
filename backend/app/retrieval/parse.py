@@ -2,13 +2,18 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
+# Words that carry no retrieval signal and no explanatory value. They are
+# dropped from query units *and* from reason chips: a chip reading 'The message
+# mentions "the"' is noise on every single row, which teaches the reader to
+# ignore the one part of the UI that explains the match.
 SEARCH_STOP_WORDS = {
-    "a", "about", "an", "and", "are", "as", "at", "be", "but", "by", "can", "could",
-    "did", "do", "does", "email", "emails", "for", "find", "from", "give", "have", "how",
-    "i", "in", "inbox", "into", "is", "it", "mail", "mailbox", "me", "message", "messages",
-    "my", "of", "on", "or", "please", "recent", "related", "search", "show", "tell", "that",
-    "the", "their", "them", "there", "this", "to", "was", "we", "what", "when", "where",
-    "which", "who", "why", "with", "would", "you", "your",
+    "a", "about", "an", "and", "are", "as", "ask", "asked", "asking", "asks", "at", "be",
+    "but", "by", "can", "could", "did", "do", "does", "email", "emails", "find", "for",
+    "from", "give", "have", "how", "i", "in", "inbox", "into", "is", "it", "mail",
+    "mailbox", "me", "mention", "mentioned", "mentions", "message", "messages", "my", "of",
+    "on", "or", "please", "recent", "related", "say", "said", "says", "search", "show",
+    "tell", "that", "the", "their", "them", "there", "this", "to", "told", "was", "we",
+    "what", "when", "where", "which", "who", "why", "with", "would", "you", "your",
 }
 
 

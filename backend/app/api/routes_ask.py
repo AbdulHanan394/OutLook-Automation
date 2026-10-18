@@ -32,7 +32,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
@@ -44,11 +44,17 @@ from app.llm.intent import Interpretation, interpret, interpretation_to_json, ke
 from app.llm.questions import is_recent_summary_question, recent_summary_topic
 from app.llm.timeline import build_timeline, is_timeline_question
 from app.retrieval.clues import SearchClues, add_soft_clues
-from app.retrieval.fts import build_match_filter, build_queries, query_units
-from app.retrieval.operator_search import operator_query, reasons_for, serialize_rows
+from app.retrieval.fts import build_match_filter, build_queries, build_rank_query, query_units
+from app.retrieval.operator_search import (
+    operator_query,
+    rank_operator_rows,
+    reasons_for,
+    serialize_rows,
+)
 from app.retrieval.operators import Operators, date_window, parse_operators
 from app.retrieval.parse import parse_query
-from app.retrieval.pipeline import MatchReason, keyword_search
+from app.retrieval.pipeline import MatchReason, keyword_search, match_reasons
+from app.retrieval.relevance import rank_rows
 from app.security.csrf import require_csrf
 from app.security.rate_limit import enforce_user_rate_limit
 from app.security.sessions import require_user
@@ -63,6 +69,11 @@ EXAMPLES = (
     "Summarise the marketing campaign emails",
     "from:sara@example.com has:attachment before:2026-04-01",
 )
+
+# One line, one meaning. When the provider cannot be reached the reader is told
+# that and nothing else: a fallback is not a failed answer, and pairing it with
+# "I could not answer that" claimed an attempt was made that never happened.
+AI_UNAVAILABLE_NOTICE = "AI unavailable, showing keyword matches."
 
 SSE_HEADERS = {
     "Cache-Control": "no-store, private",
@@ -213,14 +224,22 @@ def retrieve_for_question(
     # newest. Treating it as a bare recap returned unrelated recent messages.
     terms = recent_summary_topic(question) or question
     units = query_units(" ".join(search_terms_for(client, terms)))
-    match_filter = build_match_filter(EMAIL_SEARCH_VECTOR, build_queries(units))
+    queries = build_queries(units)
+    match_filter = build_match_filter(EMAIL_SEARCH_VECTOR, queries)
     if match_filter is None:
         return []
+    # Ranked by relevance, not by date. The excerpt budget is small and the
+    # candidate list is capped just after it, so recency ordering spent those
+    # slots on the newest twelve messages that matched a single common word and
+    # the message the reader actually meant never reached the model at all.
+    # Recency stays as the tie-break so equally relevant messages read newest first.
+    rank_query = build_rank_query(queries)
+    ordering = [func.ts_rank(EMAIL_SEARCH_VECTOR, rank_query).desc(), Email.received_at.desc()]
     return list(
         db.scalars(
             select(Email)
             .where(*base, match_filter)
-            .order_by(Email.received_at.desc())
+            .order_by(*(ordering if rank_query is not None else [Email.received_at.desc()]))
             .limit(settings.rag_max_excerpts)
         )
     )
@@ -377,7 +396,10 @@ def ask(
     def stream() -> Iterator[str]:
         # ---- Path A: operators only. Deterministic, zero model calls. -------
         if operators_only:
-            rows = operator_query(db, user_id=user_id, mailbox_id=mailbox.id, operators=operators)
+            rows = rank_operator_rows(
+                operator_query(db, user_id=user_id, mailbox_id=mailbox.id, operators=operators),
+                operators,
+            )
             results = serialize_rows(rows, reasons_for_all(rows, operators))
             yield sse("interpretation", interpretation_to_json(keyword_only(request.query, operators)))
             yield sse(
@@ -404,13 +426,13 @@ def ask(
             if client is None:
                 notice = {
                     "message": "The daily AI request limit has been reached. "
-                    "Showing keyword results instead.",
+                    "Showing keyword matches.",
                     "fallback": True,
                 }
         else:
             notice = {
                 "message": "AI interpretation is off for this mailbox. "
-                "Showing keyword results instead.",
+                "Showing keyword matches.",
                 "fallback": True,
             }
 
@@ -431,16 +453,15 @@ def ask(
         # ---- Path C: answer ------------------------------------------------
         if interpretation.intent == "ask":
             if client is None:
+                # No provider, no answer. Say so in one line and run the keyword
+                # search the reader would have got anyway: returning an empty
+                # result set here used to leave the UI claiming it could not
+                # answer, which is a different and much worse failure.
                 yield sse(
-                    "results",
-                    {
-                        "results": [],
-                        "confidence": "none",
-                        "message": "AI answers are unavailable right now. "
-                        "Use Find to search instead.",
-                    },
+                    "error",
+                    {"message": AI_UNAVAILABLE_NOTICE, "fallback": True},
                 )
-                yield sse("done", {"used_model": False, "path": "ask-fallback"})
+                yield from _keyword_fallback(db, user_id, mailbox.id, request, operators, settings)
                 return
             try:
                 result = run_answer(
@@ -455,12 +476,7 @@ def ask(
                 limit = provider_limit_reason(error)
                 yield sse(
                     "error",
-                    {
-                        "message": limit
-                        or "The AI provider is unavailable right now. "
-                        "Showing keyword results instead.",
-                        "fallback": True,
-                    },
+                    {"message": AI_UNAVAILABLE_NOTICE, "fallback": True, "detail": limit},
                 )
                 # Fall straight through to a keyword find rather than failing.
                 yield from _keyword_fallback(db, user_id, mailbox.id, request, operators, settings)
@@ -484,22 +500,25 @@ def ask(
                     "timeline": result.get("timeline", []),
                 },
             )
+            cited_ids = _cited_email_ids(result.get("claims", []))
             answer_rows = _rows_for_citations(
                 db,
                 user_id,
                 result.get("closest_emails", []),
-                _cited_email_ids(result.get("claims", [])),
+                cited_ids,
+                question=operators.free_text or request.query,
             )
             yield sse(
                 "results",
                 {
                     "results": answer_rows,
                     "confidence": "high" if result.get("sufficient_evidence") else "none",
-                    # Without this the client falls back to the first row, which
-                    # opened an unrelated message while the answer described a
-                    # different one. The answer leads with its first verified
-                    # claim, so that is the message to open.
-                    "best_email_id": _best_email_id(result.get("claims", []), answer_rows),
+                    # Row 1 is the best-scoring verified citation, so the badge,
+                    # the "Cited in the answer" chip and the message the reading
+                    # pane opens all agree. Without this the client falls back to
+                    # the first row, which opened an unrelated message while the
+                    # answer described a different one.
+                    "best_email_id": _best_email_id(answer_rows, cited_ids),
                 },
             )
             yield sse("done", {"used_model": True, "path": "ask"})
@@ -515,19 +534,18 @@ def reasons_for_all(rows: list[Email], operators: Operators) -> list[list[dict[s
     return [reasons_for(row, operators) for row in rows]
 
 
-def _best_email_id(claims: list[dict[str, Any]], rows: list[dict[str, Any]]) -> str | None:
+def _best_email_id(rows: list[dict[str, Any]], cited: set[str] | None = None) -> str | None:
     """The email the reading pane should open for this answer.
 
-    The first verified claim names the message the answer opens on. It is only
-    used when that message is actually in the result list, so the client never
-    tries to open something the reader cannot see.
+    ``_rows_for_citations`` already puts the highest-scoring verified citation
+    first, so row 1 is the best match and the badge belongs there. When nothing
+    was verified there is no best match at all: the badge would claim the answer
+    found something it did not find, and the client falls back to the first row,
+    which is the correct default for "these are just the closest ones".
     """
-    listed = {row["email_id"] for row in rows}
-    for claim in claims:
-        for email_id in claim.get("email_ids", []) or []:
-            if str(email_id) in listed:
-                return str(email_id)
-    return None
+    if not rows or not cited:
+        return None
+    return rows[0]["email_id"] if rows[0]["email_id"] in cited else None
 
 
 def _cited_email_ids(claims: list[dict[str, Any]]) -> set[str]:
@@ -545,7 +563,12 @@ def _cited_email_ids(claims: list[dict[str, Any]]) -> set[str]:
 
 
 def _rows_for_citations(
-    db: Session, user_id: UUID, closest: list[dict[str, Any]], cited: set[str] | None = None
+    db: Session,
+    user_id: UUID,
+    closest: list[dict[str, Any]],
+    cited: set[str] | None = None,
+    *,
+    question: str = "",
 ) -> list[dict[str, Any]]:
     """Rehydrate cited emails so the list can show real subjects and previews.
 
@@ -557,6 +580,10 @@ def _rows_for_citations(
     Only those may be described as cited: when the model reports insufficient
     evidence the claims array is empty, and labelling those rows "Cited in the
     answer" would assert something that never happened.
+
+    The rows go through the same ordering rules as every other result list --
+    cited first, best-scoring first, duplicates collapsed, weak tail cut off --
+    so the reader's first row is the message the answer actually rests on.
     """
     ids: list[UUID] = []
     for item in closest:
@@ -576,13 +603,24 @@ def _rows_for_citations(
         )
     )
     cited_ids = cited or set()
+    criteria = parse_query(question) if question.strip() else None
+    ordered = rank_rows(
+        emails,
+        terms=criteria.terms if criteria else [],
+        phrases=criteria.phrases if criteria else [],
+        cited=cited_ids,
+    )
     rows: list[dict[str, Any]] = []
-    for email in emails:
+    for email in ordered:
+        reasons: list[dict[str, str]] = []
         if str(email.id) in cited_ids:
-            detail = "Cited in the answer"
-        else:
-            detail = "Closest match to your question"
-        rows.append(row_payload(email, [{"type": "phrase", "detail": detail}]))
+            reasons.append({"type": "citation", "detail": "Cited in the answer"})
+        if criteria is not None:
+            # What actually matched, not a restatement of the question. A row
+            # with no lexical match simply shows no chip, which is honest: the
+            # model cited it for a reason the words alone do not explain.
+            reasons.extend(reason_dicts(match_reasons(email, criteria)))
+        rows.append(row_payload(email, reasons[:5]))
     return rows
 
 
@@ -608,9 +646,9 @@ def _find_events(
         yield sse(
             "error",
             {
-                "message": provider_limit_reason(error)
-                or "The AI provider is unavailable right now. Showing keyword results instead.",
+                "message": AI_UNAVAILABLE_NOTICE,
                 "fallback": True,
+                "detail": provider_limit_reason(error),
             },
         )
         yield from _keyword_fallback(db, user_id, mailbox_id, request, operators, settings)
@@ -627,39 +665,36 @@ def _keyword_fallback(
     operators: Operators,
     settings: Settings,
 ) -> Iterator[str]:
-    """Operator-only path B. No model, so a provider failure still returns rows."""
-    merged = operators
-    if operators.free_text:
-        # Fall back to plain lexical matching over whatever the reader typed.
-        criteria = parse_query(operators.free_text)
-        units = query_units(criteria.query)
-        match_filter = build_match_filter(EMAIL_SEARCH_VECTOR, build_queries(units))
-        if match_filter is not None:
-            rows = list(
-                db.scalars(
-                    select(Email)
-                    .where(
-                        Email.user_id == user_id,
-                        Email.mailbox_connection_id == mailbox_id,
-                        Email.is_deleted.is_(False),
-                        match_filter,
-                    )
-                    .order_by(Email.received_at.desc())
-                    .limit(settings.max_alternatives)
-                )
-            )
-        else:
-            rows = []
-    else:
-        rows = operator_query(db, user_id=user_id, mailbox_id=mailbox_id, operators=merged)
-    _ = request
-    results = serialize_rows(rows, reasons_for_all(rows, merged))
+    """No model available: run the lexical find the reader could have run.
+
+    This deliberately reuses ``run_find`` rather than a second retrieval
+    implementation. The old inline version ordered by recency, returned at most
+    ``max_alternatives`` rows whatever they scored, and reported operator reasons
+    for what was really a free-text match -- so a fallback list was the weakest
+    list in the product. Sharing the path means it is ranked, de-duplicated and
+    cut off by exactly the same rules as a real find, and its rows carry the
+    same real reasons.
+
+    Confidence is capped at ``low``: a degraded retrieval did not earn a strong
+    match by being the only one left.
+    """
+    outcome = run_find(
+        db,
+        user_id=user_id,
+        mailbox_id=mailbox_id,
+        raw_query=request.query,
+        operators=operators,
+        interpretation=keyword_only(request.query, operators),
+        settings=settings,
+    )
+    results = outcome.get("results") or []
     yield sse(
         "results",
         {
             "results": results,
             "confidence": "low" if results else "none",
-            "message": None if results else "No messages matched.",
+            "message": None if results else "No messages matched those words.",
+            "best_email_id": None,
         },
     )
     yield sse("done", {"used_model": False, "path": "keyword-fallback"})

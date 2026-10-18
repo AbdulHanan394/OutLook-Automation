@@ -104,6 +104,11 @@ export default function MailClient() {
   const [claims, setClaims] = useState<AskClaim[]>([]);
   const [answerSufficient, setAnswerSufficient] = useState(false);
   const [isAnswerMode, setIsAnswerMode] = useState(false);
+  // Set when the server ran without a model. A keyword list is a different kind
+  // of thing from an answer, so the answer card is never rendered for one --
+  // claiming "I could not answer that" about a request that was never sent to a
+  // model is simply false, and it buried the results the reader could act on.
+  const [aiUnavailable, setAiUnavailable] = useState(false);
   const [selectedClaim, setSelectedClaim] = useState<number | null>(null);
   const [sessionTurns, setSessionTurns] = useState<string[]>([]);
   const [conversationOpen, setConversationOpen] = useState(false);
@@ -308,6 +313,7 @@ export default function MailClient() {
       setChips([]);
       setSelectedClaim(null);
       setIsAnswerMode(false);
+      setAiUnavailable(false);
       setMobilePane("list");
 
       try {
@@ -321,7 +327,12 @@ export default function MailClient() {
                 const interpretation = event as unknown as AskInterpretationWire;
                 setChips(interpretation.chips ?? []);
                 setNotice(interpretation.fallback_notice ?? null);
-                setIsAnswerMode(interpretation.intent === "ask");
+                // `fallback` is the server saying it had no model to interpret
+                // with. An "ask" intent decided by a rule is still an ask, but
+                // it will be answered by keywords, so no answer card.
+                const degraded = Boolean(interpretation.fallback);
+                setAiUnavailable(degraded);
+                setIsAnswerMode(interpretation.intent === "ask" && !degraded);
                 setStatusBusy("searching");
                 break;
               }
@@ -359,6 +370,15 @@ export default function MailClient() {
                 break;
               }
               case "error":
+                // A mid-stream provider failure is still a degradation, not an
+                // answer. Drop out of answer mode so the keyword rows that
+                // follow are shown on their own, under the one-line notice.
+                if (event.fallback) {
+                  setAiUnavailable(true);
+                  setIsAnswerMode(false);
+                  setAnswer("");
+                  setClaims([]);
+                }
                 setNotice(event.message);
                 break;
               case "done":
@@ -407,6 +427,7 @@ export default function MailClient() {
     setSubmittedQuery("");
     setSelectedClaim(null);
     setIsAnswerMode(false);
+    setAiUnavailable(false);
     setConfidence("none");
   }, []);
 
@@ -490,6 +511,10 @@ export default function MailClient() {
   const selectedMailbox = useMemo(
     () => mailboxes.find((mailbox) => mailbox.id === mailboxId) ?? null,
     [mailboxes, mailboxId],
+  );
+  const selectedFolderName = useMemo(
+    () => folders.find((folder) => folder.id === folderId)?.name ?? folderId ?? "",
+    [folders, folderId],
   );
   const bestResult =
     results.find((result) => result.email_id === bestEmailId) ?? results[0] ?? null;
@@ -609,7 +634,7 @@ export default function MailClient() {
 
         {askActive ? (
           <section className="list-pane" aria-label="Search results" aria-busy={askStatus !== "idle"}>
-            {isAnswerMode ? (
+            {isAnswerMode && !aiUnavailable ? (
               <div className="answer-scroll">
                 <AnswerCard
                   answer={answer}
@@ -690,7 +715,7 @@ export default function MailClient() {
           <span aria-hidden="true">←</span> Back
         </button>
         <span className="mobile-pane-label">
-          {mobilePane === "folders" ? "Folders" : mobilePane === "list" ? (folderId ?? "") : "Message"}
+          {mobilePane === "folders" ? "Folders" : mobilePane === "list" ? selectedFolderName : "Message"}
         </span>
         {mobilePane === "list" ? (
           <button type="button" className="text-button" onClick={() => setMobilePane("folders")}>

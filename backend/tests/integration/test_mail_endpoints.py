@@ -301,6 +301,61 @@ def test_render_response_carries_its_own_strict_csp(client: TestClient, db) -> N
     assert "no-store" in response.headers["cache-control"]
 
 
+@pytest.mark.parametrize(
+    ("theme", "ink", "paper"),
+    [
+        ("light", "#171516", "#f8f7f7"),
+        ("dark", "#f3f0f1", "#1c1a1b"),
+    ],
+)
+def test_the_rendered_document_carries_the_chosen_theme(
+    client: TestClient, db, theme: str, ink: str, paper: str
+) -> None:
+    """The iframe is an opaque origin: it inherits no colour scheme, cannot see
+    data-theme, and cannot even inherit a font family. The theme has to be
+    written into the document that actually reaches the browser."""
+    user = make_user(db, f"theme-{theme}@example.test")
+    mailbox = make_mailbox(db, user)
+    email = make_email(db, user, mailbox, graph_id=f"theme-{theme}",
+                       body_html='<p style="color:#ff0000;font-family:Comic Sans MS">Hi</p>')
+
+    sign_in(db, client, user)
+    body = client.get(
+        f"/api/mail/messages/{email.id}/render",
+        params={"mailbox_id": str(mailbox.id), "theme": theme},
+    ).text
+
+    assert f'name="color-scheme" content="{theme}"' in body
+    assert f"background:{paper}" in body
+    assert f"color:{ink}" in body
+    style = body.split("<style>")[1].split("</style>")[0]
+    # The font is named, not inherited: "inherit" in an opaque-origin frame
+    # resolves to the user-agent default, which is not this app's typeface.
+    assert "IBM Plex Mono" in style
+    assert "inherit" not in style.split("}")[0], (
+        "the body font was left to inherit from a document that inherits nothing"
+    )
+
+
+def test_email_markup_cannot_pin_its_own_text_colour(client: TestClient, db) -> None:
+    """An inline colour on a <td> beats any rule on <body>, which is how half of
+    every email ended up black-on-black in dark mode. !important is the only
+    thing that wins, and the theme has to win or the pane is unreadable."""
+    user = make_user(db, "theme-override@example.test")
+    mailbox = make_mailbox(db, user)
+    email = make_email(db, user, mailbox, graph_id="theme-override",
+                       body_html='<p style="color:#000000">Text</p>')
+
+    sign_in(db, client, user)
+    body = client.get(
+        f"/api/mail/messages/{email.id}/render",
+        params={"mailbox_id": str(mailbox.id), "theme": "dark"},
+    ).text
+
+    assert "color:inherit!important" in body
+    assert "font-family:inherit!important" in body
+
+
 def test_load_images_is_an_explicit_opt_in(client: TestClient, db) -> None:
     user = make_user(db, "images@example.test")
     mailbox = make_mailbox(db, user)

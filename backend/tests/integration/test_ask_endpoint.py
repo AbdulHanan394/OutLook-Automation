@@ -8,11 +8,12 @@ not change the answer, and a daily or spend cap degrades without a retry loop.
 
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi.testclient import TestClient
 
+from app.api.routes_ask import AI_UNAVAILABLE_NOTICE
 from app.db import AskHistory, Email
 from tests.integration.mailbox_helpers import (
     make_email,
@@ -699,6 +700,442 @@ def test_ask_requires_authentication(client: TestClient, db) -> None:
     mailbox = make_mailbox(db, user)
     client.cookies.clear()
     assert ask(client, str(mailbox.id), "anything").status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# result shaping: ordering, duplicates and the relevance cutoff
+# --------------------------------------------------------------------------- #
+
+BASE = datetime(2026, 1, 10, tzinfo=UTC)
+
+
+def _stub_answering(*, keywords: list[str], cite_first: int = 0) -> Any:
+    """A model that cites one of the excerpts it was actually given."""
+
+    class Answering:
+        def json_message(self, system: str, prompt: str, max_tokens: int = 1200):
+            if "keywords" in system:
+                return ({"keywords": keywords}, 5, 5)
+            labels = re.findall(r'<email id="([^"]+)"', prompt)
+            assert labels, f"no excerpt labels in prompt: {prompt[:200]}"
+            return (
+                {
+                    "sufficient_evidence": True,
+                    "answer": "The revised budget was approved on 12 March.",
+                    "claims": [
+                        {
+                            "text": "Budget approved on 12 March",
+                            "type": "explicit",
+                            "sources": [labels[cite_first]],
+                            "quote": "The revised budget was approved on 12 March",
+                        }
+                    ],
+                },
+                5,
+                5,
+            )
+
+    return Answering()
+
+
+def _seed_budget_mailbox(db, user, mailbox, *, noise: int = 4) -> dict[str, Any]:
+    """One obviously-correct budget email, plus ``noise`` retrieved-but-irrelevant.
+
+    The noise emails contain a keyword the model's extraction returns, so
+    retrieval really does surface them -- the cutoff is what has to remove them,
+    and a test where they were never retrieved would prove nothing.
+
+    Timestamps are pinned so the citation always resolves to the budget email:
+    excerpts are ordered newest-first, so E1 is whoever is newest.
+    """
+    seeded: dict[str, Any] = {}
+    for index in range(noise):
+        seeded[f"noise-{index}"] = make_email(
+            db, user, mailbox, graph_id=f"noise-{index}",
+            subject=f"Lunch {index}",
+            body_text="Shall we get lunch on Friday? The meeting is at noon.",
+            received_at=BASE + timedelta(days=index),
+        )
+    seeded["strong"] = make_email(
+        db, user, mailbox, graph_id="strong",
+        subject="Revised budget approval",
+        body_text="The revised budget was approved on 12 March by the finance team.",
+        received_at=BASE + timedelta(days=noise),
+    )
+    return seeded
+
+
+QUESTION = "what did they say about the budget?"
+
+
+def test_retrieval_ranks_by_relevance_not_by_date(client: TestClient, db, monkeypatch) -> None:
+    """Excerpt slots are scarce and the candidate list is capped just after them.
+
+    Recency ordering spent those slots on the newest messages that happened to
+    contain one common word, so the message the reader actually meant never
+    reached the model at all.
+    """
+    seen_labels: list[str] = []
+
+    class Peeking:
+        def json_message(self, system: str, prompt: str, max_tokens: int = 1200):
+            if "keywords" in system:
+                return ({"keywords": ["budget"]}, 5, 5)
+            seen_labels.extend(re.findall(r'<email id="([^"]+)"', prompt))
+            return ({"sufficient_evidence": False, "answer": None, "claims": []}, 5, 5)
+
+    monkeypatch.setattr("app.api.routes_ask.reserve_claude_call", lambda *a, **k: True)
+    monkeypatch.setattr("app.api.routes_ask.create_json_client", lambda *a, **k: Peeking())
+
+    user = make_user(db, "ordering@example.test")
+    mailbox = make_mailbox(db, user, ai_consent=True)
+    relevant = make_email(
+        db, user, mailbox, graph_id="relevant", subject="Revised budget approval",
+        body_text="The revised budget was approved on 12 March.",
+        received_at=BASE,
+    )
+    # Newer, and it matches the keyword in the least meaningful way possible.
+    for index in range(20):
+        make_email(
+            db, user, mailbox, graph_id=f"newer-{index}", subject=f"Status update {index}",
+            body_text="Routine project note. No budget discussion here.",
+            received_at=BASE + timedelta(days=1 + index),
+        )
+
+    sign_in(db, client, user)
+    read_events(ask(client, str(mailbox.id), QUESTION))
+
+    assert seen_labels, "the model was given no context at all"
+    assert str(relevant.id) in seen_labels, (
+        "the message matching the question was crowded out of the excerpt slots "
+        "by newer, less relevant ones"
+    )
+
+
+def test_the_answer_list_cuts_rows_far_weaker_than_the_best(
+    client: TestClient, db, monkeypatch
+) -> None:
+    """The cutoff is relative to the top score, so the lunch emails that
+    retrieval happened to return are not listed under a budget question."""
+    monkeypatch.setattr("app.api.routes_ask.reserve_claude_call", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "app.api.routes_ask.create_json_client",
+        lambda *a, **k: _stub_answering(keywords=["budget", "lunch"]),
+    )
+
+    user = make_user(db, "cutoff@example.test")
+    mailbox = make_mailbox(db, user, ai_consent=True)
+    seeded = _seed_budget_mailbox(db, user, mailbox, noise=6)
+
+    sign_in(db, client, user)
+    events = dict(read_events(ask(client, str(mailbox.id), QUESTION)))
+
+    rows = events["results"]["results"]
+    assert str(seeded["strong"].id) in {row["email_id"] for row in rows}
+    for index in range(6):
+        assert str(seeded[f"noise-{index}"].id) not in {row["email_id"] for row in rows}, (
+            "an unrelated email survived the relevance cutoff"
+        )
+
+
+def test_the_keyword_find_path_is_cut_by_the_same_rule(
+    client: TestClient, db, monkeypatch
+) -> None:
+    monkeypatch.setattr("app.api.routes_ask.reserve_claude_call", lambda *a, **k: True)
+
+    user = make_user(db, "cutoff-find@example.test")
+    mailbox = make_mailbox(db, user, ai_consent=True)
+    make_email(
+        db, user, mailbox, graph_id="strong", subject="Revised budget approval",
+        body_text="The revised budget was approved on 12 March by the finance team.",
+        received_at=BASE + timedelta(days=1),
+    )
+    for index in range(4):
+        make_email(
+            db, user, mailbox, graph_id=f"noise-{index}", subject=f"Lunch {index}",
+            body_text="Shall we get lunch on Friday?",
+            received_at=BASE + timedelta(days=index),
+        )
+
+    sign_in(db, client, user)
+    rows = dict(
+        read_events(ask(client, str(mailbox.id), "budget approval", mode="find"))
+    )["results"]["results"]
+
+    assert [row["subject"] for row in rows] == ["Revised budget approval"]
+
+
+def test_the_best_match_badge_and_the_citation_chip_land_on_row_one(
+    client: TestClient, db, monkeypatch
+) -> None:
+    """The badge, the chip and the message the reading pane opens must agree."""
+    monkeypatch.setattr("app.api.routes_ask.reserve_claude_call", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "app.api.routes_ask.create_json_client",
+        lambda *a, **k: _stub_answering(keywords=["budget", "lunch"]),
+    )
+
+    user = make_user(db, "rowone@example.test")
+    mailbox = make_mailbox(db, user, ai_consent=True)
+    seeded = _seed_budget_mailbox(db, user, mailbox, noise=3)
+
+    sign_in(db, client, user)
+    events = dict(read_events(ask(client, str(mailbox.id), QUESTION)))
+
+    rows = events["results"]["results"]
+    assert rows, "the answer must still list the email it cites"
+    assert rows[0]["email_id"] == str(seeded["strong"].id)
+    assert events["results"]["best_email_id"] == rows[0]["email_id"]
+    assert any(
+        reason["detail"] == "Cited in the answer" for reason in rows[0]["reasons"]
+    ), "row 1 is the cited message, so it carries the citation chip"
+
+
+def test_no_badge_is_awarded_when_nothing_was_actually_cited(
+    client: TestClient, db, monkeypatch
+) -> None:
+    """A badge on an uncited row claims the answer found something it did not."""
+
+    class Insufficient:
+        def json_message(self, system: str, prompt: str, max_tokens: int = 1200):
+            if "keywords" in system:
+                return ({"keywords": ["budget"]}, 5, 5)
+            return ({"sufficient_evidence": False, "answer": None, "claims": []}, 5, 5)
+
+    monkeypatch.setattr("app.api.routes_ask.reserve_claude_call", lambda *a, **k: True)
+    monkeypatch.setattr("app.api.routes_ask.create_json_client", lambda *a, **k: Insufficient())
+
+    user = make_user(db, "nobadge@example.test")
+    mailbox = make_mailbox(db, user, ai_consent=True)
+    _seed_budget_mailbox(db, user, mailbox)
+
+    sign_in(db, client, user)
+    events = dict(read_events(ask(client, str(mailbox.id), QUESTION)))
+
+    assert events["results"]["best_email_id"] is None
+
+
+def test_duplicate_messages_collapse_to_a_single_row(
+    client: TestClient, db, monkeypatch
+) -> None:
+    """The same message filed twice is one email, not two results."""
+    monkeypatch.setattr("app.api.routes_ask.reserve_claude_call", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "app.api.routes_ask.create_json_client",
+        lambda *a, **k: _stub_answering(keywords=["budget"]),
+    )
+
+    user = make_user(db, "dupes@example.test")
+    mailbox = make_mailbox(db, user, ai_consent=True)
+    original = make_email(
+        db, user, mailbox, graph_id="original", folder="inbox",
+        subject="Revised budget approval",
+        body_text="The revised budget was approved on 12 March by the finance team.",
+        received_at=BASE,
+    )
+    copy = make_email(
+        db, user, mailbox, graph_id="copy", folder="archive",
+        subject="Revised budget approval",
+        body_text="The revised budget was approved on 12 March by the finance team.",
+        received_at=BASE + timedelta(days=1),
+    )
+    # Same subject and body is what makes it a duplicate, and the content hash is
+    # exactly what the sync job derives from those two fields.
+    copy.normalized_content_hash = original.normalized_content_hash
+    db.commit()
+
+    sign_in(db, client, user)
+    rows = dict(read_events(ask(client, str(mailbox.id), QUESTION)))["results"]["results"]
+
+    assert len(rows) == 1
+    assert rows[0]["email_id"] == str(copy.id)
+
+
+# --------------------------------------------------------------------------- #
+# reasons
+# --------------------------------------------------------------------------- #
+
+
+def test_answer_results_explain_what_matched_instead_of_restating_the_question(
+    client: TestClient, db, monkeypatch
+) -> None:
+    """"Closest match to your question" was the same sentence on every row. A
+    reason the reader cannot check is not a reason."""
+    monkeypatch.setattr("app.api.routes_ask.reserve_claude_call", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "app.api.routes_ask.create_json_client",
+        lambda *a, **k: _stub_answering(keywords=["budget"]),
+    )
+
+    user = make_user(db, "reasons@example.test")
+    mailbox = make_mailbox(db, user, ai_consent=True)
+    _seed_budget_mailbox(db, user, mailbox)
+
+    sign_in(db, client, user)
+    rows = dict(read_events(ask(client, str(mailbox.id), QUESTION)))["results"]["results"]
+
+    assert rows
+    details = [reason["detail"] for reason in rows[0]["reasons"]]
+    assert "Closest match to your question" not in details
+    assert any("budget" in detail.lower() for detail in details), details
+
+
+def test_answer_result_chips_never_cite_a_stop_word(
+    client: TestClient, db, monkeypatch
+) -> None:
+    """"The message mentions \\"the\\"" is true of every email ever sent, and a
+    chip that cannot discriminate between rows teaches the reader to ignore
+    every chip."""
+    monkeypatch.setattr("app.api.routes_ask.reserve_claude_call", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "app.api.routes_ask.create_json_client",
+        lambda *a, **k: _stub_answering(keywords=["budget"]),
+    )
+
+    user = make_user(db, "stopwords@example.test")
+    mailbox = make_mailbox(db, user, ai_consent=True)
+    make_email(
+        db, user, mailbox, graph_id="wordy", subject="The budget",
+        body_text="The revised budget was approved on 12 March.",
+    )
+
+    sign_in(db, client, user)
+    rows = dict(
+        read_events(ask(client, str(mailbox.id), "what did they ask to find in the budget?"))
+    )["results"]["results"]
+
+    assert rows
+    details = " ".join(reason["detail"] for reason in rows[0]["reasons"]).lower()
+    for stop_word in ('"the"', '"to"', '"from"', '"in"', '"ask"'):
+        assert stop_word not in details, f"a chip cited the stop word {stop_word}: {details}"
+    assert "budget" in details, "the one word that carries the query is still reported"
+
+
+def test_find_results_merge_subject_and_body_matches_into_one_chip_each(
+    client: TestClient, db, monkeypatch
+) -> None:
+    monkeypatch.setattr("app.api.routes_ask.reserve_claude_call", lambda *a, **k: True)
+
+    user = make_user(db, "merge@example.test")
+    mailbox = make_mailbox(db, user, ai_consent=True)
+    make_email(
+        db, user, mailbox, graph_id="merged", subject="Revised budget approval",
+        body_text="The timeline slipped and finance re-checked it.",
+    )
+
+    sign_in(db, client, user)
+    rows = dict(
+        read_events(ask(client, str(mailbox.id), "revised budget timeline", mode="find"))
+    )["results"]["results"]
+
+    assert rows
+    subject_chips = [r for r in rows[0]["reasons"] if r["type"] == "subject"]
+    body_chips = [r for r in rows[0]["reasons"] if r["type"] == "phrase"]
+    assert len(subject_chips) == 1, "two subject words are one reason, not two"
+    assert len(body_chips) == 1, "body matches collapse the same way"
+    assert subject_chips[0]["detail"] == 'The subject mentions "revised", "budget".'
+    assert body_chips[0]["detail"] == 'The message mentions "timeline".'
+
+
+# --------------------------------------------------------------------------- #
+# fallback mode
+# --------------------------------------------------------------------------- #
+
+
+def _always_fails(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes_ask.reserve_claude_call", lambda *a, **k: True)
+
+    def unavailable(*args, **kwargs):
+        import anthropic
+
+        raise anthropic.APIError(message="boom", request=None, body=None)
+
+    monkeypatch.setattr("app.api.routes_ask.create_json_client", lambda *a, **k: unavailable())
+
+
+def test_fallback_mode_says_the_ai_is_unavailable_and_nothing_else(
+    client: TestClient, db, monkeypatch
+) -> None:
+    """The reader gets one line explaining the degradation. They must never also
+    be told an answer was attempted and failed, because none was."""
+    _always_fails(monkeypatch)
+
+    user = make_user(db, "fallback@example.test")
+    mailbox = make_mailbox(db, user, ai_consent=True)
+    make_email(
+        db, user, mailbox, graph_id="f-1", subject="Revised budget approval",
+        body_text="The revised budget was approved on 12 March.", received_at=BASE,
+    )
+
+    sign_in(db, client, user)
+    events = read_events(ask(client, str(mailbox.id), QUESTION))
+    payload = dict(events)
+
+    assert AI_UNAVAILABLE_NOTICE in [data["message"] for name, data in events if name == "error"]
+    assert not [name for name, _ in events if name == "answer_delta"], (
+        "a fallback must not stream answer text"
+    )
+    assert not [name for name, _ in events if name == "citations"]
+    assert payload["results"]["results"], "the reader is shown keyword matches instead"
+    assert payload["results"]["confidence"] != "high"
+    assert events[-1] == ("done", {"used_model": False, "path": "keyword-fallback"})
+
+
+def test_fallback_results_carry_real_reasons(
+    client: TestClient, db, monkeypatch
+) -> None:
+    """A fallback list used to be reported with operator reasons for what was
+    really a free-text match -- so it explained nothing at all."""
+    _always_fails(monkeypatch)
+
+    user = make_user(db, "fallbackreasons@example.test")
+    mailbox = make_mailbox(db, user, ai_consent=True)
+    make_email(
+        db, user, mailbox, graph_id="f-2", subject="Revised budget approval",
+        body_text="The revised budget was approved on 12 March.",
+        received_at=BASE + timedelta(days=1),
+    )
+    make_email(
+        db, user, mailbox, graph_id="f-3", subject="Lunch", body_text="Shall we get lunch?",
+        received_at=BASE,
+    )
+
+    sign_in(db, client, user)
+    rows = dict(read_events(ask(client, str(mailbox.id), "revised budget")))["results"]["results"]
+
+    assert rows
+    assert rows[0]["subject"] == "Revised budget approval"
+    assert any("budget" in detail.lower() for detail in rows[0]["why"])
+    assert all(row["subject"] != "Lunch" for row in rows), "the cutoff applies here too"
+
+
+def test_ask_without_a_provider_falls_back_instead_of_returning_nothing(
+    client: TestClient, db, monkeypatch
+) -> None:
+    """No consent, no client, and the intent is still "ask". The old behaviour
+    returned an empty result set, so the reader got a dead end instead of the
+    keyword matches they were perfectly able to read."""
+
+    def must_not_be_called(*args, **kwargs):
+        raise AssertionError("no provider should be constructed without consent")
+
+    monkeypatch.setattr("app.api.routes_ask.reserve_claude_call", must_not_be_called)
+    monkeypatch.setattr("app.api.routes_ask.create_json_client", must_not_be_called)
+
+    user = make_user(db, "noconsent@example.test")
+    mailbox = make_mailbox(db, user, ai_consent=False)
+    make_email(
+        db, user, mailbox, graph_id="nc-1", subject="Revised budget approval",
+        body_text="The revised budget was approved on 12 March.", received_at=BASE,
+    )
+
+    sign_in(db, client, user)
+    events = read_events(ask(client, str(mailbox.id), QUESTION))
+    payload = dict(events)
+
+    assert payload["results"]["results"], "keyword matches must still be returned"
+    assert events[-1] == ("done", {"used_model": False, "path": "keyword-fallback"})
+    assert not [name for name, _ in events if name == "answer_delta"]
 
 
 # --------------------------------------------------------------------------- #

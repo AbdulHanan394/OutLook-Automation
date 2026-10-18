@@ -14,8 +14,10 @@ from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import EMAIL_SEARCH_VECTOR, Attachment, Email
+from app.mail.folders import folder_display_name
 from app.retrieval.fts import build_match_filter, build_queries, build_rank_query, query_units
 from app.retrieval.operators import Operators, date_window, sender_matches
+from app.retrieval.relevance import rank_rows
 
 MAX_RESULTS = 25
 
@@ -164,6 +166,22 @@ def reasons_for(email: Email, operators: Operators) -> list[dict[str, str]]:
     if operators.before:
         reasons.append({"type": "date", "detail": f"Received before {operators.before.isoformat()}"})
     if operators.folders:
-        reasons.append({"type": "subject", "detail": f"In {operators.folders[0]}"})
+        reasons.append({"type": "folder", "detail": f"In {folder_display_name(operators.folders[0])}"})
     return reasons[:5]
+
+
+def rank_operator_rows(rows: list[Email], operators: Operators) -> list[Email]:
+    """Drop operator results that never matched the words the reader typed.
+
+    Every row here already satisfies the indexed predicates, so ``from:sara
+    has:attachment`` is fully answered by SQL and needs nothing further. The
+    exception is ``subject:``, which is not a predicate in the query at all --
+    without this it returned the whole mailbox, newest first, with a "Subject
+    contains" chip on the handful that actually matched. Scoring the subject
+    words and applying the shared cutoff is what turns it back into a filter.
+    """
+    if not operators.subjects:
+        # No words to compare on, so nothing is less relevant than anything else.
+        return rows
+    return rank_rows(rows, terms=operators.subjects, phrases=[])
 

@@ -17,7 +17,12 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.llm.intent import Interpretation, interpret, keyword_only
 from app.retrieval.clues import SearchClues, add_soft_clues
-from app.retrieval.operator_search import operator_query, reasons_for, serialize_rows
+from app.retrieval.operator_search import (
+    operator_query,
+    rank_operator_rows,
+    reasons_for,
+    serialize_rows,
+)
 from app.retrieval.operators import Operators, date_window, parse_operators
 from app.retrieval.parse import parse_query
 from app.retrieval.pipeline import keyword_search
@@ -43,8 +48,11 @@ def run_operator_find(
     operators: Operators,
 ) -> tuple[list[dict[str, Any]], Confidence]:
     """Path A. Deterministic, indexed, and returns before any client is touched."""
-    rows = operator_query(db, user_id=user_id, mailbox_id=mailbox_id, operators=operators)
-    results = serialize_rows(rows, [reasons_for(row, operators) for row in rows])
+    ranked = rank_operator_rows(
+        operator_query(db, user_id=user_id, mailbox_id=mailbox_id, operators=operators),
+        operators,
+    )
+    results = serialize_rows(ranked, [reasons_for(row, operators) for row in ranked])
     # These are explicit constraints the reader typed, so a match is not a guess.
     return results, "high" if results else "none"
 

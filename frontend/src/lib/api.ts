@@ -194,7 +194,7 @@ export function getThread(mailboxId: string, threadId: string): Promise<ThreadPa
 }
 
 export type MatchReason = {
-  type: "sender" | "date" | "phrase" | "subject" | "semantic" | "attachment";
+  type: "sender" | "date" | "phrase" | "subject" | "semantic" | "attachment" | "folder" | "citation";
   detail: string;
 };
 
@@ -255,7 +255,7 @@ export type AskEvent =
       timeline?: { date: string | null; email_id: string; subject: string; sender: string; text: string; quote: string }[];
     }
   | { type: "done"; used_model?: boolean; path?: string }
-  | { type: "error"; message: string; fallback?: boolean };
+  | { type: "error"; message: string; fallback?: boolean; detail?: string | null };
 
 export type AskHistoryItem = {
   id: string;

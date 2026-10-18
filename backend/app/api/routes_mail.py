@@ -23,6 +23,11 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.db import Attachment, Email, MailboxConnection, get_db, set_user_scope
+from app.mail.folders import (
+    FOLDER_DISPLAY_NAMES,
+    FOLDER_ORDER,
+    folder_display_name,
+)
 from app.mail.sanitize import sanitize_email_html, split_quoted
 from app.security.rate_limit import enforce_user_rate_limit
 from app.security.sessions import require_user
@@ -32,21 +37,25 @@ router = APIRouter(prefix="/api/mail", tags=["mail"])
 MAX_PAGE_SIZE = 100
 DEFAULT_PAGE_SIZE = 50
 
-# Outlook's well-known folder names. These are the mailbox owner's own folder
-# names, not Microsoft branding: they are the labels Graph itself returns for
-# parentFolderId, and a mailbox in any locale gets these keys.
-FOLDER_DISPLAY_NAMES = {
-    "inbox": "Inbox",
-    "sentitems": "Sent Items",
-    "drafts": "Drafts",
-    "archive": "Archive",
-    "deleteditems": "Deleted Items",
-    "junkemail": "Junk Email",
-    "outbox": "Outbox",
-    "outboxs": "Outbox",
-    "recoverableitemsdeletions": "Recoverable Items",
-}
-FOLDER_ORDER = tuple(FOLDER_DISPLAY_NAMES)
+# The reading pane's font, restated for a document that cannot inherit it. Kept
+# in sync with --font-mono in frontend/src/app/tokens.css.
+THEME_FONT_FAMILY = (
+    "'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', "
+    "ui-monospace, monospace"
+)
+THEME_FONT = f"font-family:{THEME_FONT_FAMILY}"
+
+__all__ = [
+    "FOLDER_DISPLAY_NAMES",
+    "FOLDER_ORDER",
+    "folder_display_name",
+    "get_message",
+    "get_thread",
+    "list_folders",
+    "list_messages",
+    "render_message",
+    "router",
+]
 
 
 def owned_mailbox(mailbox_id: UUID, user_id: UUID, db: Session) -> MailboxConnection:
@@ -59,15 +68,6 @@ def owned_mailbox(mailbox_id: UUID, user_id: UUID, db: Session) -> MailboxConnec
     if not mailbox:
         raise HTTPException(404, "Mailbox not found")
     return mailbox
-
-
-def folder_display_name(alias: str) -> str:
-    key = alias.strip().lower()
-    if key in FOLDER_DISPLAY_NAMES:
-        return FOLDER_DISPLAY_NAMES[key]
-    # A custom folder synced by its Graph id: fall back to the alias so the
-    # sidebar still shows something the reader can distinguish.
-    return alias.strip().title() or "Mail"
 
 
 def encode_cursor(received_at: datetime, email_id: UUID) -> str:
@@ -414,14 +414,26 @@ def render_message(
     # see the app's data-theme attribute. The reader's chosen theme is passed
     # explicitly rather than guessed from prefers-color-scheme, which would
     # disagree whenever the app theme differs from the OS setting.
+    #
+    # The font stack mirrors the app's --font-mono. It is named rather than
+    # inherited: an opaque-origin frame inherits *nothing* from its embedder, so
+    # `font-family: inherit` silently resolved to the UA default and every email
+    # rendered in a serif face the rest of the app does not use.
     palette = (
         {"ink": "#171516", "paper": "#f8f7f7", "muted": "#777174", "rule": "#d4d1d2"}
         if theme == "light"
         else {"ink": "#f3f0f1", "paper": "#1c1a1b", "muted": "#a49da0", "rule": "#393536"}
     )
     style = (
-        "body{margin:0;padding:14px;font-family:inherit;"
+        f"body{{margin:0;padding:14px;{THEME_FONT};"
         f"background:{palette['paper']};color:{palette['ink']}}}"
+        # Email markup almost always hard-codes its own colours, and a body rule
+        # loses to any inline style. Left alone, dark mode rendered half of
+        # every email as black-on-black. `!important` is the only thing that
+        # beats an inline declaration, and the theme has to win or the reading
+        # pane is unreadable in one of the two themes.
+        "*,*::before,*::after{color:inherit!important;"
+        f"font-family:inherit!important;{THEME_FONT_FAMILY}}}"
         f"a{{color:{palette['ink']}}}"
         f"blockquote{{margin:0;padding-left:12px;border-left:3px solid {palette['rule']}}}"
         "img{max-width:100%;height:auto}"
