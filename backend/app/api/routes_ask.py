@@ -52,7 +52,7 @@ from app.retrieval.operator_search import (
     serialize_rows,
 )
 from app.retrieval.operators import Operators, date_window, parse_operators
-from app.retrieval.parse import parse_query
+from app.retrieval.parse import drop_conversational_filler, parse_query
 from app.retrieval.pipeline import MatchReason, keyword_search, match_reasons
 from app.retrieval.relevance import rank_rows
 from app.security.csrf import require_csrf
@@ -319,7 +319,7 @@ def run_find(
     settings: Settings,
 ) -> dict[str, Any]:
     """Path B: the existing keyword pipeline, so recall matches /api/search."""
-    criteria = parse_query(operators.free_text or raw_query)
+    criteria = drop_conversational_filler(parse_query(operators.free_text or raw_query))
     if interpretation.rewrites or interpretation.soft_clues:
         criteria = add_soft_clues(
             criteria,
@@ -419,9 +419,10 @@ def ask(
             if reserve_claude_call(db, user_id, settings):
                 try:
                     client = create_json_client(settings, "interpret")
-                except HTTPException:
-                    # The provider is unconfigured or the spend cap is spent;
-                    # both already mean "fall back to keywords".
+                except (HTTPException, anthropic.APIError, httpx.HTTPError):
+                    # The provider is unconfigured, the spend cap is spent, or it
+                    # is simply unreachable. All three mean the same thing here:
+                    # degrade to keyword results rather than fail the request.
                     client = None
             if client is None:
                 notice = {

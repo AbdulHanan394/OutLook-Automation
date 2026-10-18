@@ -2,7 +2,57 @@
 
 ## Unreleased
 
+### Added
+
+- **Conversational Ask.** Chats are listed, renamed, pinned, archived, searched and deleted from a history rail; the transcript and the cited email sit beside it in three independently scrolling panes; and a temporary chat answers from the same grounded retrieval while leaving nothing in the database.
+- **Follow-ups work.** Each turn is grounded in the earlier ones and in the messages already under discussion, so "what about the second one?" resolves. The working set stores email *ids* only and bodies are re-read from `emails`, so a deleted email stops resolving instead of lingering in a chat.
+- **Long chats stay bounded.** Older turns fold into a running summary every twelve messages, keeping the prompt small without deleting what the reader can scroll. Folding is best effort: a provider failure leaves the transcript intact and the turn still answers.
+- **Bounded read-only tools.** The assistant can now choose what to read -- `search_emails`, `read_email`, `list_recent`, `count_emails`. This is the one place it gets to pick, and the constraints are enforced in code rather than trusted to the prompt: there is no write tool and no Graph call; no tool accepts a `user_id` or `mailbox_id` and every query is scoped to the user and the conversation's own mailbox; and steps, rows per call, body size and total emails read per turn are all capped. When the budget runs out the loop stops and answers from what it had -- it never asks the model to continue. Grounding is unchanged: the final answer still goes through `verify_answer`, so a tool cannot introduce an unsupported claim. A provider that cannot drive tools degrades to single-turn retrieval rather than failing.
+- **Stated memory.** "Always give me the dates" is kept as a preference and injected into later answers. Nothing is inferred from what is read, every note is listed in Settings in the reader's own words, and each can be removed there. Notes are deleted with the mailbox they came from.
+- **Mailbox routing.** With several mailboxes, a question picks one from the conversation's own mailbox, then an address named in the question, then a remembered preference, then the selection. The model is never asked to choose, because a mis-route is invisible to the reader.
+- **Follow-up suggestions.** Up to three questions this reader might ask next, drawn from the conversation and the subject lines already retrieved -- never from mail the reader has not been shown. They are buttons that fill the composer and nothing is sent until they press Send: an offer, not a prefill. A provider failure returns an empty list.
+
 ### Fixed
+
+- **The composer locked after one message, and every reply appeared twice.** Both came from one omission: the turn's `done` event had no handler on the Ask page. Without it `sending` was never cleared, so the textarea and Send button stayed disabled for the rest of the session; and the streaming bubble was never taken down, so once the transcript reloaded the same answer was on screen twice -- once with its cited emails, then again as a bare bubble. The handler now ends the turn, and the final `answer` event replaces the streamed text rather than being appended to it.
+- **The tool loop could never run.** `app/assistant/tool_loop.py` asks the client for the next tool call, but no client implemented it -- `ClaudeClient` and `GroqClient` only had `json_message`. Every turn raised `ToolsUnavailable` and fell back to single-turn retrieval, so AI3's safety layer guarded code that never executed. Both clients now drive native tool calling (Anthropic tool use; OpenAI-compatible function calling), with usage accounted per turn.
+- **A turn with no answer showed an empty bubble.** The result carries an `explanation` when retrieval finds nothing, but only `answer` was stored and streamed, so the reader saw an empty message with no reason given. The explanation is now shown and stored.
+- **The chat layout overlapped itself at 390px.** The mobile rail was sized with `max-height` inside an `auto` grid row, so it overflowed and the history card sat on top of the transcript. The rows are sized explicitly instead of their contents.
+- **A conversational question matched nothing.** `parse_query` keeps every token, which is right for a search box but not for a question: "what did they say about the budget?" is seven words and one topic, and requiring all seven matched no message at all. Every conversational ask therefore fell back to an empty keyword list, and the degraded path the spec relies on returned nothing instead of the reader's matches. The ask path now drops conversational filler before searching, and the stop-word list gained the pronouns and copulas it was missing (`they`, `he`, `she`, `its`, `our`, `us`, `being`, `should`, ...).
+- A provider that is unreachable or misconfigured no longer fails the ask request: the client factory's failures are caught alongside the spend-cap refusal, so the reader gets keyword results instead of a 500.
+- `test_retrieval_ranks_by_relevance_not_by_date` compared an email's UUID against the excerpt *labels* (`E1`, `E2`, ...), which can never match. It now reads the ranking from the subjects in the order they were offered to the model, which is what the test's name claims to check.
+
+### Measured
+
+Against the 5,004-message demo mailbox (`demo@example.test`) with the configured provider, five conversational turns (`eval/measure_chat.py`, `eval/result-chat.json`):
+
+| | median | range |
+|---|---|---|
+| Time to first token | 6.29s | 4.76 – 7.07s |
+| Total turn | 6.29s | — |
+| Tool steps per turn | 2 | 0 – 3 |
+| Provider calls per turn | 3 | — |
+| Tokens per turn | 542 | — |
+
+Every call count is the real provider's, not an estimate: the loop reports `calls`, `input_tokens` and `output_tokens` on each stored turn. Turn cost is dominated by the tool round-trips -- 2 tool steps plus the final verified answer is 3 calls, against 2 for the single-turn path. The `CLAUDE_DAILY_CALL_CAP` budget therefore goes roughly 1.5x faster per conversational turn than per ask, which is worth revisiting before the cap is enabled for chat.
+
+### Changed
+
+- `docs/ARCHITECTURE.md` now states where per-user isolation actually comes from. The app connects as a superuser in both shipped databases, which bypasses RLS even when it is forced, so the explicit `user_id` predicate is currently the only layer doing the work. The file carries the exact statements to make the policies real.
+
+- The mail screen no longer scrolls as a page. It is an application shell now: the document is exactly the viewport tall, and the folders, message list and reading pane are three independent scroll containers. Previously the page scrolled underneath all three panes, so one wheel gesture moved the list, the reading pane and the document together.
+- The message list's infinite scroll observes the list container instead of the window. With the shell no longer scrolling, a viewport-rooted observer never fired after the first page, so paging simply stopped working.
+- The quick-filter row and the date headers are sticky inside the list rather than sitting above it, and the reading pane remembers its scroll position per message and starts a new message at the top.
+- The sync status line is pinned to the bottom of the visible folder pane. It sat directly under the last folder, so it scrolled out of sight as soon as there were more folders than fit.
+- Collapsing the folder pane is now a 56px rail that animates over 150ms and hands its width to the list and the reading pane. The grid columns were percentages, which are resolved against the grid width and so could never take up the freed space. The collapsed state is remembered in `localStorage` and the rail is the default between 768px and 1100px wide.
+- Every folder has a distinct icon, a tooltip, an accessible name and a readable unread badge in the rail, and folders with no indexed mail are no longer offered as dead ends.
+- The folder pane's collapse control is always visible, flips its chevron, and carries `aria-expanded` and a matching label.
+- Email bodies are themed from the app's own tokens -- colour, background, link colour, font family, line height and the matching `color-scheme` -- and are re-sent whenever the theme changes.
+- Email text is no longer black on a black background in dark theme. The rule that forces a message's colour onto the theme used a universal selector, which also matches the `<body>` element itself; the body therefore inherited from `<html>`, which carries no colour, and every message fell back to the user-agent default. It is now scoped to the body's descendants.
+- An email that brings its own colours is no longer force-repainted into the app's palette. Forcing it destroyed the sender's design in one theme and left black-on-black in the other; such a message is now shown on paper in both themes with an "Original formatting" label, and only colourless and plain-text messages inherit the theme.
+- A sender-designed *dark* email gets the mirror-image treatment: a dark sheet with light ink in both themes. Its background paints over ours whatever we do, so replacing the ink is the only thing that can keep it readable -- and it has to be replaced with light ink even for a light-theme reader.
+- Text selection is legible inside the email frame in both themes.
+- `--text-3` was darkened in the light theme. It passed on the page and panel backgrounds but not on the brand-tinted selected row, where timestamps, previews and attachment marks scored 4.21:1. A contrast check across the mail screen in both themes, expanded and collapsed, now passes at 4.5:1 or better.
 
 - Result lists now say one thing about relevance. Ordering, duplicate collapsing and the "is this related at all?" cutoff lived in three places and each decided differently, so the same question produced different lists depending on which path answered it. All three now call one module (`app/retrieval/relevance.py`).
 - A relevance cutoff keeps unrelated emails off screen. A row is listed only if it scores at least half of the best row's score. On the answer path this cut the rows a reader would have seen from 103 to 34 across the 20 evaluation queries, with no query losing its citation. When the query words are present and nothing matched them, the honest result is now an empty list rather than the whole mailbox at score zero.

@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     rag_excerpt_tokens: int = 350
     rate_limit_search_per_min: int = 30
     rate_limit_ask_per_min: int = 10
+# Chats are conversational, so the per-minute window is raised separately:
+    # a single Ask turn is one call, a chat session is many.
+    rate_limit_chat_per_min: int = Field(default=30, ge=1)
     # Browsing is deliberately looser than searching: opening a folder and
     # scrolling a large mailbox issues a request per page, and the acceptance
     # target is a 5,000-message folder scrolling without hitting a wall.
@@ -61,6 +64,15 @@ class Settings(BaseSettings):
     rate_limit_commitments_per_min: int = Field(default=10, ge=1)
     rate_limit_contacts_per_min: int = Field(default=10, ge=1)
     claude_daily_call_cap: int = Field(default=100, ge=1)
+    # Chat history holds content derived from private email, so it is swept like
+    # the rest of the user's derived data. 0 means keep until the user deletes it.
+    chat_retention_days: int = Field(default=0, ge=0, le=3650)
+    # Tool rounds allowed per chat turn. The loop stops at this many calls and
+    # answers from what it already has; it never asks the model to continue.
+    chat_tool_max_steps: int = Field(default=4, ge=1, le=12)
+    # When the provider cannot drive a tool loop, fall back to single-turn
+    # retrieval rather than failing the turn.
+    chat_use_tools: bool = True
     commitment_folders: str = "sentitems"
     commitment_backfill_max_emails: int = Field(default=100, ge=1)
     attachment_max_mb: int = Field(default=10, ge=1, le=50)

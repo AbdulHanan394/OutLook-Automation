@@ -1,4 +1,5 @@
-from app.api import routes_ask, routes_assistant
+from app.api import routes_ask
+from app.assistant import turn
 from app.llm.answer import (
     ANSWER_SYSTEM,
     MAX_QUOTE_WORDS,
@@ -14,9 +15,12 @@ def test_both_ask_endpoints_share_one_answer_prompt():
     The ask bar's copy never described the response shape, so the provider
     returned `source` instead of `sources` with no `text` or `type` and every
     claim was dropped as unverifiable.
+
+    ``app.assistant.turn`` is the shared implementation behind both the ask bar
+    and the conversational endpoint, so there is only one copy left to drift.
     """
     assert routes_ask.ANSWER_SYSTEM is ANSWER_SYSTEM
-    assert routes_assistant.ANSWER_SYSTEM is ANSWER_SYSTEM
+    assert turn.ANSWER_SYSTEM is ANSWER_SYSTEM
     # The schema has to actually be in the prompt.
     for required in ("sufficient_evidence", "claims", "sources", "quote", "25 words"):
         assert required in ANSWER_SYSTEM, f"answer prompt no longer mentions {required!r}"

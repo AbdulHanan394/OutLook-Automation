@@ -1,173 +1,365 @@
 "use client";
+
 import Link from "next/link";
-import { FormEvent, useState } from "react";
-import SearchProgress, { ProgressStep } from "../../../components/search-progress";
-import { api } from "../../../lib/api";
+import { useCallback, useEffect, useState } from "react";
+import ChatPanel, { StreamingTurn } from "../../../components/chat/chat-panel";
+import ChatSidebar, { useChatHistory } from "../../../components/chat/chat-sidebar";
+import ReadingPane from "../../../components/mail/reading-pane";
+import { MessageDetail, MessageRow, getMessage, getThread } from "../../../lib/api";
+import {
+  ChatCitation,
+  ChatMessage,
+  ChatSummary,
+  ChatTurnEvent,
+  createChat,
+  fetchSuggestions,
+  getChat,
+  sendChatMessage,
+  sendTemporaryMessage,
+} from "../../../lib/chats";
 import { useConnectedMailbox } from "../../../lib/use-connected-mailbox";
 
-type AskResult = {
-  answer?: string | null;
-  explanation?: string;
-  response_type?: "timeline";
-  timeline?: { date: string | null; email_id: string; subject: string; sender: string; text: string; quote: string; outlook_url?: string | null }[];
-  claims?: { text: string; type: "explicit" | "inferred"; email_ids: string[]; quote: string }[];
-  closest_emails?: { email_id: string; subject: string; sender: string; received_at: string; outlook_url?: string | null }[];
-};
-
-const questionIdeas = [
-  "Give me a gentle summary of my recent conversations",
-  "What should I follow up on?",
-  "What did we decide about…?",
-];
-
-const ASK_STEPS: ProgressStep[] = [
-  { id: "understand", label: "Understanding your question", detail: "Working out what you are actually asking for.", at: 0 },
-  { id: "retrieve", label: "AI is finding the relevant emails", detail: "Only excerpted, quoted text is ever sent to the model.", at: 420, ai: true },
-  { id: "answer", label: "Writing the answer", detail: "Building a grounded reply from the retrieved conversations.", at: 2000, ai: true },
-  { id: "verify", label: "Checking every quote", detail: "Confirming each claim traces back to a real email.", at: 3400 },
-];
-
+/**
+ * The conversational Ask page.
+ *
+ * Three panes on the `.mail-page` grid so each scrolls independently: chat
+ * history, the transcript, and the reading pane. The reading pane is the same
+ * component the mail shell uses, so an email cited in a chat opens exactly the
+ * way it opens in the mailbox.
+ */
 export default function Ask() {
-  const [question, setQuestion] = useState("");
-  const [result, setResult] = useState<AskResult>();
-  const [askError, setAskError] = useState("");
-  const [asking, setAsking] = useState(false);
-  const { mailboxes, mailboxId, setMailboxId, loading: mailboxesLoading, error: mailboxError } = useConnectedMailbox();
-  const selectedMailbox = mailboxes.find(mailbox => mailbox.id === mailboxId);
+  const { chats, setChats, loading, error: historyError, refresh } = useChatHistory();
+  const { mailboxes, mailboxId, setMailboxId, loading: mailboxesLoading, error: mailboxError } =
+    useConnectedMailbox();
 
-  async function ask(e: FormEvent) {
-    e.preventDefault();
-    setAsking(true);
-    setAskError("");
-    setResult(undefined);
-    try {
-      const response = await api<AskResult>("/api/assistant/ask", {
-        method: "POST",
-        body: JSON.stringify({ mailbox_id: mailboxId, question }),
-      });
-      setResult(response);
-    } catch (error) {
-      setAskError(error instanceof Error ? error.message : "Could not get an answer. Please try again.");
-    } finally {
-      setAsking(false);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [savedMessages, setSavedMessages] = useState<ChatMessage[]>([]);
+  const [chatMailboxId, setChatMailboxId] = useState<string | null>(null);
+  const [temporary, setTemporary] = useState(false);
+  // A temporary chat has no id, so its transcript exists only here and is
+  // discarded when the chat is closed.
+  const [temporaryMessages, setTemporaryMessages] = useState<ChatMessage[]>([]);
+
+  const [streaming, setStreaming] = useState<StreamingTurn | null>(null);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [sending, setSending] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [pageError, setPageError] = useState<string | null>(null);
+
+  const [openEmailId, setOpenEmailId] = useState<string | null>(null);
+  const [messageDetail, setMessageDetail] = useState<MessageDetail | null>(null);
+  const [messageThread, setMessageThread] = useState<MessageRow[]>([]);
+  const [messageLoading, setMessageLoading] = useState(false);
+  const [messageError, setMessageError] = useState<string | null>(null);
+
+  const selectedMailbox = mailboxes.find((mailbox) => mailbox.id === mailboxId);
+  const consentMissing = Boolean(selectedMailbox) && !selectedMailbox?.ai_consent;
+  const noMailbox = !mailboxesLoading && !mailboxError && mailboxes.length === 0;
+
+  const blockedReason = noMailbox
+    ? "Connect Outlook to ask questions about your email."
+    : consentMissing
+      ? "Enable AI answers for this mailbox in Settings to continue."
+      : null;
+
+  // Load the active chat.
+  useEffect(() => {
+    if (!activeId) {
+      setSavedMessages([]);
+      setChatMailboxId(null);
+      return;
     }
-  }
+    let cancelled = false;
+    getChat(activeId)
+      .then((found) => {
+        if (cancelled) return;
+        setSavedMessages(found.messages);
+        setChatMailboxId(found.mailbox_id);
+      })
+      .catch((cause: unknown) => {
+        if (cancelled) return;
+        setPageError(cause instanceof Error ? cause.message : "Could not open that chat.");
+        setActiveId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId]);
+
+  // Offered follow-ups, refetched when the transcript changes. An empty list is
+  // a normal result: the reader simply gets no buttons.
+  useEffect(() => {
+    if (!activeId || savedMessages.length === 0) {
+      setSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    fetchSuggestions(activeId)
+      .then((found) => {
+        if (!cancelled) setSuggestions(found);
+      })
+      .catch(() => {
+        if (!cancelled) setSuggestions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId, savedMessages.length]);
+
+  const startNewChat = useCallback(() => {
+    setTemporary(false);
+    setTemporaryMessages([]);
+    setActiveId(null);
+    setStreaming(null);
+    setNotice(null);
+    setPageError(null);
+    setOpenEmailId(null);
+    setMessageDetail(null);
+  }, []);
+
+  const toggleTemporary = useCallback(() => {
+    setTemporary((value) => {
+      const next = !value;
+      // Leaving a temporary chat discards it, which is the entire point.
+      if (!next) setTemporaryMessages([]);
+      return next;
+    });
+    setStreaming(null);
+    setNotice(null);
+    setPageError(null);
+  }, []);
+
+  const openEmail = useCallback(
+    async (emailId: string, ownerMailboxId: string | null) => {
+      const target = ownerMailboxId ?? mailboxId;
+      if (!target) return;
+      setOpenEmailId(emailId);
+      setMessageLoading(true);
+      setMessageError(null);
+      try {
+        const found = await getMessage(target, emailId);
+        setMessageDetail(found);
+        const key = found.conversation_id || found.thread_key;
+        if (!key) {
+          setMessageThread([]);
+        } else {
+          // A thread that will not load must not block reading the message.
+          getThread(target, key)
+            .then((page) => setMessageThread(page.messages))
+            .catch(() => setMessageThread([]));
+        }
+      } catch (cause) {
+        setMessageDetail(null);
+        setMessageError(cause instanceof Error ? cause.message : "Could not open that email.");
+      } finally {
+        setMessageLoading(false);
+      }
+    },
+    [mailboxId],
+  );
+
+  const finishTurn = useCallback((citations: ChatCitation[], answer: string) => {
+    setStreaming(null);
+    setSending(false);
+    const message: ChatMessage = {
+      id: `local-${Date.now()}`,
+      role: "assistant",
+      text: answer,
+      content: {},
+      citations,
+      steps: [],
+      created_at: new Date().toISOString(),
+    };
+    setTemporaryMessages((current) => [...current, message]);
+  }, []);
+
+  /**
+   * Send one turn.
+   *
+   * The saved path creates the conversation on the first message, so a chat that
+   * is never used leaves no row. The temporary path is grounded in the same
+   * mailbox but writes nothing at all.
+   */
+  const handleSend = useCallback(
+    async (text: string) => {
+      setNotice(null);
+      setPageError(null);
+      setStreaming({ question: text, answer: "", started: false });
+      setSending(true);
+
+      const question: ChatMessage = {
+        id: `local-${Date.now()}`,
+        role: "user",
+        text,
+        content: {},
+        citations: [],
+        steps: [],
+        created_at: new Date().toISOString(),
+      };
+      if (temporary) {
+        setTemporaryMessages((current) => [...current, question]);
+      }
+
+      const controller = new AbortController();
+      let answer = "";
+      let citations: ChatCitation[] = [];
+
+      const onEvent = (event: ChatTurnEvent) => {
+        switch (event.type) {
+          case "answer_delta":
+            answer += event.text;
+            setStreaming((current) => (current ? { ...current, answer } : current));
+            break;
+          case "answer":
+            // The final answer replaces the streamed text rather than adding to
+            // it: the deltas and this event carry the same words.
+            answer = event.text || event.explanation || answer;
+            break;
+          case "citations":
+            citations = event.citations;
+            break;
+          case "done":
+            // The turn is over. Without this the composer stayed disabled for
+            // good after the first message, because nothing else clears it.
+            setStreaming(null);
+            setSending(false);
+            break;
+          case "error":
+          case "unavailable":
+            setNotice(event.message);
+            setStreaming(null);
+            setSending(false);
+            break;
+          default:
+            break;
+        }
+      };
+
+      try {
+        if (temporary) {
+          await sendTemporaryMessage(mailboxId ?? "", text, onEvent, controller.signal);
+          finishTurn(citations, answer);
+          if (!activeId) return;
+          return;
+        }
+
+        let target = activeId;
+        if (!target) {
+          const chosen = mailboxes.find((mailbox) => mailbox.id === mailboxId);
+          if (!chosen?.ai_consent) {
+            setNotice(blockedReason ?? "Choose a connected mailbox first.");
+            setStreaming(null);
+            setSending(false);
+            return;
+          }
+          const created = await createChat(chosen.id);
+          setChats((current: ChatSummary[]) => [created, ...current]);
+          setActiveId(created.id);
+          setChatMailboxId(created.mailbox_id);
+          target = created.id;
+          setSavedMessages([question]);
+        }
+
+        await sendChatMessage(target, text, onEvent, controller.signal);
+        const reloaded = await getChat(target);
+        setSavedMessages(reloaded.messages);
+        refresh();
+      } catch (cause) {
+        setNotice(null);
+        setPageError(cause instanceof Error ? cause.message : "The assistant could not be reached.");
+        setStreaming(null);
+        setSending(false);
+      }
+    },
+    [temporary, activeId, mailboxId, mailboxes, blockedReason, finishTurn, refresh, setChats],
+  );
+
+  const messages = temporary ? temporaryMessages : savedMessages;
 
   return (
-    <main>
-      <div className="page-intro">
+    <main className="mail-page chat-page">
+      <div className="chat-toolbar">
         <h1>Ask your inbox</h1>
-        <p className="page-description">Ask in your own words. I’ll look through your latest synced Outlook emails and bring the relevant conversations together in a friendly summary.</p>
-      </div>
-      <form className="form-panel form-grid" onSubmit={ask}>
         {mailboxes.length > 1 && (
-          <label>
-            Outlook account
-            <select value={mailboxId} onChange={e => setMailboxId(e.target.value)} required>
-              {mailboxes.map(mailbox => <option key={mailbox.id} value={mailbox.id}>{mailbox.email}</option>)}
+          <label className="chat-mailbox">
+            <span className="sr-only">Outlook account</span>
+            <select
+              value={mailboxId ?? ""}
+              onChange={(event) => {
+                setMailboxId(event.target.value);
+                startNewChat();
+              }}
+            >
+              {mailboxes.map((mailbox) => (
+                <option key={mailbox.id} value={mailbox.id}>
+                  {mailbox.email}
+                </option>
+              ))}
             </select>
           </label>
         )}
-        {mailboxes.length === 1 && <p className="connected-account">Asking about <strong>{mailboxes[0].email}</strong></p>}
-        <div className="question-input">
-          <label htmlFor="email-question">What would you like to know?</label>
-          <textarea
-            id="email-question"
-            aria-label="Question"
-            placeholder="Try asking a full question, like “What did the team agree about the launch date?”"
-            value={question}
-            onChange={e => setQuestion(e.target.value)}
-            minLength={3}
-            maxLength={1000}
-            required
-            rows={3}
+        {mailboxes.length === 1 && (
+          <p className="connected-account">
+            Asking about <strong>{mailboxes[0].email}</strong>
+          </p>
+        )}
+      </div>
+
+      <div className="mail-panes chat-panes">
+        <ChatSidebar
+          chats={chats}
+          activeId={temporary ? null : activeId}
+          temporary={temporary}
+          onSelect={(id) => {
+            setTemporary(false);
+            setTemporaryMessages([]);
+            setStreaming(null);
+            setNotice(null);
+            setPageError(null);
+            setActiveId(id || null);
+          }}
+          onNewChat={startNewChat}
+          onToggleTemporary={toggleTemporary}
+          onChanged={setChats}
+          searchToken={chats.length}
+        />
+
+        <div className="chat-main">
+          {loading && <p className="status-message">Loading your chats&hellip;</p>}
+          {noMailbox && (
+            <p className="status-message">
+              Connect Outlook to ask questions about your email.{" "}
+              <Link href="/app/settings">Go to Settings</Link>
+            </p>
+          )}
+          <ChatPanel
+            messages={messages}
+            streaming={streaming}
+            sending={sending}
+            notice={notice}
+            error={pageError ?? historyError ?? mailboxError}
+            suggestions={suggestions}
+            onSend={(text) => void handleSend(text)}
+            onOpenEmail={(emailId) => void openEmail(emailId, chatMailboxId ?? mailboxId)}
+            disabled={Boolean(blockedReason)}
+            disabledReason={blockedReason ?? undefined}
+            temporary={temporary}
           />
         </div>
-        <div className="question-ideas" aria-label="Example questions">
-          <span className="muted">Try asking</span>
-          {questionIdeas.map(idea => (
-            <button className="question-idea" key={idea} type="button" onClick={() => setQuestion(idea)}>
-              {idea}
-            </button>
-          ))}
+
+        <div className="chat-reading">
+          <ReadingPane
+            detail={messageDetail}
+            loading={messageLoading}
+            error={messageError}
+            mailboxId={chatMailboxId ?? mailboxId}
+            thread={messageThread}
+            highlightQuote={null}
+            onOpenThreadMessage={(id) => void openEmail(id, chatMailboxId ?? mailboxId)}
+            onRetry={() => openEmailId && void openEmail(openEmailId, chatMailboxId ?? mailboxId)}
+          />
         </div>
-        <div className="button-row">
-          <button disabled={mailboxesLoading || asking || !mailboxId || !selectedMailbox?.ai_consent}>
-            {asking ? (
-              <>
-                <span className="button-spinner" aria-hidden="true" />
-                Putting it together…
-              </>
-            ) : mailboxesLoading ? (
-              "Loading account…"
-            ) : (
-              "Ask my emails"
-            )}
-          </button>
-        </div>
-      </form>
-      <SearchProgress steps={ASK_STEPS} running={asking} heading="Thinking about your inbox" skeleton={1} />
-      {mailboxError && <p className="status-message" role="alert">{mailboxError}</p>}
-      {!mailboxesLoading && !mailboxError && mailboxes.length === 0 && (
-        <p className="status-message">Connect Outlook to ask questions about your email. <Link href="/app/settings">Go to Settings</Link></p>
-      )}
-      {selectedMailbox && !selectedMailbox.ai_consent && <p className="status-message">Enable AI answers for this mailbox in <Link href="/app/settings">Settings</Link> to continue.</p>}
-      {askError && <p className="status-message" role="alert">{askError}</p>}
-      {result && (
-        <section className="card answer-card stagger" aria-live="polite" key={question}>
-          <div className="answer-heading">
-            <span className="answer-avatar" aria-hidden="true">O</span>
-            <h2>{result.answer ? "Here’s what I found" : "Let’s try another angle"}</h2>
-          </div>
-          <p>{result.answer || result.explanation}</p>
-          {result.response_type === "timeline" && result.timeline && result.timeline.length > 0 && (
-            <div className="answer-sources">
-              <h3>Timeline</h3>
-              <ol className="answer-takeaways">
-                {result.timeline.map((event, index) => (
-                  <li key={`${event.email_id}-${index}`}>
-                    <span><strong>{event.date || "Date unavailable"}</strong> · {event.text}</span>
-                    <blockquote>“{event.quote}”</blockquote>
-                    <span className="muted">
-                      {event.sender} ·{" "}
-                      {event.outlook_url
-                        ? <a href={event.outlook_url} target="_blank" rel="noopener noreferrer">{event.subject || "(no subject)"}</a>
-                        : event.subject || "(no subject)"}
-                    </span>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-          {result.response_type !== "timeline" && result.claims && result.claims.length > 0 && (
-            <ul className="answer-takeaways">
-              {result.claims.map((claim, index) => (
-                <li key={`${claim.email_ids.join("-")}-${index}`}>
-                  <span>{claim.text}</span>
-                  <blockquote>“{claim.quote}”</blockquote>
-                </li>
-              ))}
-            </ul>
-          )}
-          {result.closest_emails && result.closest_emails.length > 0 && (
-            <div className="answer-sources">
-              <h3>Emails I used</h3>
-              <ul>
-                {result.closest_emails.map(email => (
-                  <li key={email.email_id}>
-                    <div className="source-email">
-                      {email.outlook_url
-                        ? <a href={email.outlook_url} target="_blank" rel="noopener noreferrer">{email.subject || "(no subject)"}</a>
-                        : <span>{email.subject || "(no subject)"}</span>}
-                      <span className="muted">{email.sender} · {email.received_at}</span>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </section>
-      )}
+      </div>
     </main>
   );
 }

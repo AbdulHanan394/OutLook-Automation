@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { messageRenderUrl, type MessageDetail, type MessageRow } from "../../lib/api";
 import { formatStamp } from "./message-list-pane";
 
@@ -33,6 +33,27 @@ export default function ReadingPane({
   const [showQuoted, setShowQuoted] = useState(false);
   const [copied, setCopied] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("light");
+
+  // The pane is its own scroll container so that scrolling the message list
+  // cannot move it. That makes its position worth remembering: opening a
+  // message, glancing at the list and coming back should land where the reader
+  // left off, not at the top of the headers.
+  const scrollRef = useRef<HTMLElement | null>(null);
+  const scrollPositions = useRef(new Map<string, number>());
+
+  // useLayoutEffect, not useEffect: this has to happen before the browser
+  // paints the new message, or the reader sees the new message at the old
+  // message's scroll offset first.
+  useLayoutEffect(() => {
+    const node = scrollRef.current;
+    if (!node || !detail) return;
+    node.scrollTop = scrollPositions.current.get(detail.id) ?? 0;
+  }, [detail?.id, detail]);
+
+  const rememberScroll = () => {
+    const node = scrollRef.current;
+    if (node && detail) scrollPositions.current.set(detail.id, node.scrollTop);
+  };
 
   // The iframe is an opaque origin: it cannot see data-theme, so the chosen
   // theme is read here and passed to the render endpoint explicitly.
@@ -105,7 +126,13 @@ export default function ReadingPane({
   };
 
   return (
-    <article className="reading-pane" aria-label="Reading pane" aria-busy={loading}>
+    <article
+      className="reading-pane"
+      aria-label="Reading pane"
+      aria-busy={loading}
+      ref={scrollRef}
+      onScroll={rememberScroll}
+    >
       <header className="reading-header">
         <h1 className="reading-subject">{detail.subject || "(no subject)"}</h1>
         <dl className="reading-headers">

@@ -13,6 +13,7 @@ from app.api import (
     routes_ask,
     routes_assistant,
     routes_auth,
+    routes_chats,
     routes_commitments,
     routes_contacts,
     routes_mail,
@@ -33,7 +34,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type", "X-CSRF-Token", "X-Request-Id"],
 )
-for router in [routes_auth.router, routes_mailbox.router, routes_search.router, routes_assistant.router, routes_commitments.router, routes_contacts.router, routes_webhook.router, routes_mail.router, routes_ask.router]:
+for router in [routes_auth.router, routes_mailbox.router, routes_search.router, routes_assistant.router, routes_commitments.router, routes_contacts.router, routes_webhook.router, routes_mail.router, routes_ask.router, routes_chats.router]:
     app.include_router(router)
 
 @app.middleware("http")

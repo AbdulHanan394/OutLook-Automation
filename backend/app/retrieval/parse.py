@@ -1,5 +1,5 @@
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 # Words that carry no retrieval signal and no explanatory value. They are
@@ -14,6 +14,15 @@ SEARCH_STOP_WORDS = {
     "on", "or", "please", "recent", "related", "say", "said", "says", "search", "show",
     "tell", "that", "the", "their", "them", "there", "this", "to", "told", "was", "we",
     "what", "when", "where", "which", "who", "why", "with", "would", "you", "your",
+    # Pronouns and copulas. A question is mostly these: "what did *they* say about
+    # the budget" is one topic and six filler words. A pronoun is never the
+    # distinguishing term in an email, and requiring one to appear matches
+    # nothing -- which silently emptied the keyword fallback for every
+    # conversational question.
+    "am", "been", "being", "both", "each", "he", "her", "hers", "herself", "him",
+    "himself", "its", "ours", "ourselves", "other", "others", "our", "shall",
+    "she", "should", "some", "such", "than", "then", "these", "they", "those",
+    "thus", "us", "very", "will",
 }
 
 
@@ -44,3 +53,21 @@ def required_query_terms(query: str) -> tuple[list[str], list[str]]:
     terms = [term for term in parsed.terms if term not in SEARCH_STOP_WORDS]
     phrases = [phrase.lower() for phrase in parsed.phrases]
     return list(dict.fromkeys(terms)), list(dict.fromkeys(phrases))
+
+
+def drop_conversational_filler(criteria: Criteria) -> Criteria:
+    """Criteria with question filler removed from the term list.
+
+    ``parse_query`` deliberately keeps every token: in a search box the words
+    someone typed are the words they meant. A *question* is different. "what did
+    they say about the budget?" is seven words and one topic, and requiring all
+    seven matches nothing -- which is why the keyword fallback used to come back
+    empty for every conversational question.
+
+    Falls back to the original terms if everything was filler, so a query made
+    entirely of stop words still searches for something rather than nothing.
+    """
+    kept = [term for term in criteria.terms if term not in SEARCH_STOP_WORDS]
+    if not kept or kept == list(criteria.terms):
+        return criteria
+    return replace(criteria, terms=kept)

@@ -302,22 +302,22 @@ def test_render_response_carries_its_own_strict_csp(client: TestClient, db) -> N
 
 
 @pytest.mark.parametrize(
-    ("theme", "ink", "paper"),
+    ("theme", "ink", "surface"),
     [
-        ("light", "#171516", "#f8f7f7"),
+        # tokens.css: --text and --surface.
+        ("light", "#171516", "#efeded"),
         ("dark", "#f3f0f1", "#1c1a1b"),
     ],
 )
 def test_the_rendered_document_carries_the_chosen_theme(
-    client: TestClient, db, theme: str, ink: str, paper: str
+    client: TestClient, db, theme: str, ink: str, surface: str
 ) -> None:
     """The iframe is an opaque origin: it inherits no colour scheme, cannot see
     data-theme, and cannot even inherit a font family. The theme has to be
     written into the document that actually reaches the browser."""
     user = make_user(db, f"theme-{theme}@example.test")
     mailbox = make_mailbox(db, user)
-    email = make_email(db, user, mailbox, graph_id=f"theme-{theme}",
-                       body_html='<p style="color:#ff0000;font-family:Comic Sans MS">Hi</p>')
+    email = make_email(db, user, mailbox, graph_id=f"theme-{theme}", body_html="<p>Hi</p>")
 
     sign_in(db, client, user)
     body = client.get(
@@ -326,7 +326,7 @@ def test_the_rendered_document_carries_the_chosen_theme(
     ).text
 
     assert f'name="color-scheme" content="{theme}"' in body
-    assert f"background:{paper}" in body
+    assert f"background:{surface}" in body
     assert f"color:{ink}" in body
     style = body.split("<style>")[1].split("</style>")[0]
     # The font is named, not inherited: "inherit" in an opaque-origin frame
@@ -335,16 +335,15 @@ def test_the_rendered_document_carries_the_chosen_theme(
     assert "inherit" not in style.split("}")[0], (
         "the body font was left to inherit from a document that inherits nothing"
     )
+    # No inline colours to fight, so the theme is free to pin the text colour.
+    assert "color:inherit!important" in style
 
 
-def test_email_markup_cannot_pin_its_own_text_colour(client: TestClient, db) -> None:
-    """An inline colour on a <td> beats any rule on <body>, which is how half of
-    every email ended up black-on-black in dark mode. !important is the only
-    thing that wins, and the theme has to win or the pane is unreadable."""
-    user = make_user(db, "theme-override@example.test")
+def test_a_plain_text_email_is_themed_and_not_labelled(client: TestClient, db) -> None:
+    user = make_user(db, "theme-plain@example.test")
     mailbox = make_mailbox(db, user)
-    email = make_email(db, user, mailbox, graph_id="theme-override",
-                       body_html='<p style="color:#000000">Text</p>')
+    email = make_email(db, user, mailbox, graph_id="theme-plain",
+                       body_html=None, body_text="Just words.")
 
     sign_in(db, client, user)
     body = client.get(
@@ -352,8 +351,65 @@ def test_email_markup_cannot_pin_its_own_text_colour(client: TestClient, db) -> 
         params={"mailbox_id": str(mailbox.id), "theme": "dark"},
     ).text
 
+    assert "Original formatting" not in body
     assert "color:inherit!important" in body
-    assert "font-family:inherit!important" in body
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_an_email_with_its_own_colours_is_shown_on_paper_in_both_themes(
+    client: TestClient, db, theme: str
+) -> None:
+    """Forcing the theme onto a white table destroys the sender's design in one
+    theme and is unreadable in the other, so such a message keeps its colours
+    and is shown on paper instead -- with a label saying why."""
+    user = make_user(db, f"paper-{theme}@example.test")
+    mailbox = make_mailbox(db, user)
+    email = make_email(
+        db, user, mailbox, graph_id=f"paper-{theme}",
+        body_html='<table bgcolor="#ffffff"><tr><td style="color:#000000">Hi</td></tr></table>',
+    )
+
+    sign_in(db, client, user)
+    body = client.get(
+        f"/api/mail/messages/{email.id}/render",
+        params={"mailbox_id": str(mailbox.id), "theme": theme},
+    ).text
+
+    assert "background:#ffffff" in body
+    assert "color:#171516" in body
+    assert "Original formatting" in body
+    # The sender's own declaration survives: that is the whole point of paper.
+    assert "color:inherit!important" not in body
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_a_dark_email_never_renders_black_on_black(client: TestClient, db, theme: str) -> None:
+    """The sender's background paints over ours whatever we do, so the ink is the
+    only thing that can be fixed. Left alone it is the sender's black, on the
+    sender's near-black: unreadable, and the reason paper mode was not enough."""
+    user = make_user(db, f"darkmail-{theme}@example.test")
+    mailbox = make_mailbox(db, user)
+    email = make_email(
+        db, user, mailbox, graph_id=f"darkmail-{theme}",
+        body_html='<table bgcolor="#141419"><tr><td style="color:#000000">Status update</td></tr></table>',
+    )
+
+    sign_in(db, client, user)
+    body = client.get(
+        f"/api/mail/messages/{email.id}/render",
+        params={"mailbox_id": str(mailbox.id), "theme": theme},
+    ).text
+
+    style = body.split("<style>")[1].split("</style>")[0]
+    # Light ink on a dark sheet, in both themes, forced over the sender's
+    # declaration. The surface has to move too, or the parts of the message
+    # outside the sender's own dark element would be light on light.
+    assert "color:#f3f0f1" in style
+    assert "background:#1c1a1b" in style
+    assert "color:inherit!important" in style
+    # Not the paper sheet: that is what put white behind their dark table.
+    assert "background:#ffffff" not in style
+    assert "Original formatting" in body
 
 
 def test_load_images_is_an_explicit_opt_in(client: TestClient, db) -> None:

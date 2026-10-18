@@ -11,6 +11,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.assistant.store import delete_conversations_for_mailbox
 from app.auth.microsoft import refresh_access_token
 from app.config import get_settings
 from app.db import Email, EmailChunk, IndexingJob, MailboxConnection, SessionLocal, set_user_scope
@@ -128,6 +129,12 @@ def run_forever() -> None:
                     if current.type == "delete_data":
                         db.execute(delete(EmailChunk).where(EmailChunk.mailbox_connection_id == current.mailbox_connection_id))
                         db.execute(delete(Email).where(Email.mailbox_connection_id == current.mailbox_connection_id))
+                        # Chat history is derived from this mail, so it goes with
+                        # it. The FK cascade does not fire here because the
+                        # mailbox row is only marked disconnected, not deleted.
+                        delete_conversations_for_mailbox(
+                            db, user_id=current.user_id, mailbox_id=current.mailbox_connection_id
+                        )
                     elif current.type == "disconnect":
                         mailbox = db.get(MailboxConnection, current.mailbox_connection_id)
                         if mailbox:
@@ -136,6 +143,9 @@ def run_forever() -> None:
                         if current.payload.get("delete_data"):
                             db.execute(delete(EmailChunk).where(EmailChunk.mailbox_connection_id == current.mailbox_connection_id))
                             db.execute(delete(Email).where(Email.mailbox_connection_id == current.mailbox_connection_id))
+                            delete_conversations_for_mailbox(
+                                db, user_id=current.user_id, mailbox_id=current.mailbox_connection_id
+                            )
                     elif current.type == "sync_folder":
                         run_sync_job(db, current)
                     current.status, current.finished_at = "succeeded", datetime.now(UTC)

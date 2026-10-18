@@ -6,7 +6,12 @@
   --border: #d4d1d2;
   --text: #171516;
   --text-2: #474245;
-  --text-3: #706a6e;
+  /* Darkened from #706a6e. That value passed on --bg and --surface but not on
+     the brand-tinted selected row (rgba(67,56,202,0.1) over --bg composites to
+     #e6e4f2), where it scored 4.21:1 -- so timestamps, previews and attachment
+     marks on the row the reader had selected were the one place on the mail
+     screen where a label fell below 4.5:1. */
+  --text-3: #666063;
   --accent: #171516;
   --accent-contrast: #f8f7f7;
   --danger: #a32626;
@@ -19,6 +24,11 @@
   --brand-3: #7c3aed;
   --brand-soft: rgba(67, 56, 202, 0.1);
   --brand-line: rgba(67, 56, 202, 0.28);
+  /* Text selection. Chromium renders only a flat colour here, so this is a
+     solid brand tint rather than the brand gradient. #ffffff on #4338ca is
+     8.2:1; the darker brand keeps white legible on it. */
+  --selection-bg: #4338ca;
+  --selection-fg: #ffffff;
   --brand-gradient: linear-gradient(112deg, var(--brand-1) 0%, var(--brand-3) 46%, var(--brand-2) 100%);
   --brand-gradient-animated: linear-gradient(112deg, var(--brand-1) 0%, var(--brand-3) 30%, var(--brand-2) 55%, var(--brand-3) 80%, var(--brand-1) 100%);
   --btn-bg: var(--text);
@@ -60,6 +70,10 @@
   --brand-3: #c084fc;
   --brand-soft: rgba(129, 140, 248, 0.14);
   --brand-line: rgba(129, 140, 248, 0.34);
+  /* #121011 on #818cf8 is 7.4:1. Near-black rather than white, because a light
+     brand tint over a dark page reads as a white-out otherwise. */
+  --selection-bg: #818cf8;
+  --selection-fg: #121011;
   --brand-gradient: linear-gradient(112deg, var(--brand-1) 0%, var(--brand-3) 46%, var(--brand-2) 100%);
   --brand-gradient-animated: linear-gradient(112deg, var(--brand-1) 0%, var(--brand-3) 30%, var(--brand-2) 55%, var(--brand-3) 80%, var(--brand-1) 100%);
   --btn-bg: var(--text);

@@ -1,0 +1,77 @@
+[
+  {
+    "question": "what did they say about the launch date?",
+    "time_to_first_token_s": 7.073,
+    "total_s": 7.074,
+    "delta_chunks": 1,
+    "tool_steps": 0,
+    "tools": [],
+    "answer_chars": 125,
+    "citations": 0,
+    "calls": null,
+    "input_tokens": null,
+    "output_tokens": null
+  },
+  {
+    "question": "what should I follow up on this week?",
+    "time_to_first_token_s": 6.213,
+    "total_s": 6.215,
+    "delta_chunks": 1,
+    "tool_steps": 3,
+    "tools": [
+      "search_emails",
+      "list_recent",
+      "read_email"
+    ],
+    "answer_chars": 61,
+    "citations": 5,
+    "calls": 4,
+    "input_tokens": 489,
+    "output_tokens": 41
+  },
+  {
+    "question": "summarise the most recent conversations",
+    "time_to_first_token_s": 6.293,
+    "total_s": 6.295,
+    "delta_chunks": 1,
+    "tool_steps": 2,
+    "tools": [
+      "list_recent",
+      "read_email"
+    ],
+    "answer_chars": 185,
+    "citations": 5,
+    "calls": 3,
+    "input_tokens": 488,
+    "output_tokens": 291
+  },
+  {
+    "question": "what did they say about the launch date?",
+    "time_to_first_token_s": 6.337,
+    "total_s": 6.339,
+    "delta_chunks": 1,
+    "tool_steps": 0,
+    "tools": [],
+    "answer_chars": 125,
+    "citations": 0,
+    "calls": null,
+    "input_tokens": null,
+    "output_tokens": null
+  },
+  {
+    "question": "what should I follow up on this week?",
+    "time_to_first_token_s": 4.765,
+    "total_s": 4.766,
+    "delta_chunks": 1,
+    "tool_steps": 2,
+    "tools": [
+      "list_recent",
+      "read_email"
+    ],
+    "answer_chars": 61,
+    "citations": 5,
+    "calls": 3,
+    "input_tokens": 489,
+    "output_tokens": 53
+  }
+]

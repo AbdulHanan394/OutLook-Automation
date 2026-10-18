@@ -47,6 +47,11 @@ pytestmark = pytest.mark.skipif(
 
 # Child tables first so foreign keys never block a truncate.
 TABLES_IN_DELETE_ORDER = [
+    # Chat tables first: conversation_context -> messages -> conversations is the
+    # foreign-key order, and the rest cascade from conversations anyway.
+    "messages",
+    "conversation_context",
+    "conversations",
     "email_chunks",
     "attachments",
     "commitments",

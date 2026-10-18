@@ -98,15 +98,20 @@ export default function MessageListPane({
   const now = new Date();
 
   // Infinite scroll: fetch the next page when the sentinel scrolls into view.
+  //
+  // The root is the list, not the window. The mail screen does not scroll -- it
+  // is an app shell -- so a viewport-rooted observer would never fire again
+  // after the first page, and paging would simply stop working.
   useEffect(() => {
     if (!hasMore || loading || loadingMore) return;
     const target = sentinel.current;
-    if (!target || typeof IntersectionObserver === "undefined") return;
+    const root = listRef.current;
+    if (!target || !root || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) onLoadMore();
       },
-      { root: null, rootMargin: "240px" },
+      { root, rootMargin: "240px" },
     );
     observer.observe(target);
     return () => observer.disconnect();
@@ -131,23 +136,26 @@ export default function MessageListPane({
 
   return (
     <section className="list-pane" aria-label="Messages" aria-busy={loading}>
-      {!resultMode ? (
-        <div className="quick-filters" role="group" aria-label="Quick filters">
-          {FILTERS.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              className="quick-filter"
-              aria-pressed={filter === option.id}
-              onClick={() => onFilter(option.id)}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-
+      {/* The filter row lives inside the scroll container so it can be sticky
+          against the list rather than pinned above it. Same pixels on screen,
+          but the list no longer has dead space above the first row. */}
       <div className="list-scroll" ref={listRef} tabIndex={-1}>
+        {!resultMode ? (
+          <div className="quick-filters" data-sticky="true" role="group" aria-label="Quick filters">
+            {FILTERS.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className="quick-filter"
+                aria-pressed={filter === option.id}
+                onClick={() => onFilter(option.id)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
         {error ? (
           <p className="pane-empty" role="alert">
             {error}

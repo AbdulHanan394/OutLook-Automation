@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../../lib/api";
+import MemoryPanel from "../../../components/chat/memory-panel";
 type Mailbox={id:string;email:string;status:string;ai_consent:boolean}; type Sync={state:string;email_count:number;job_status?:string;job_error?:string;last_success_at?:string|null};
 type FeedbackConfig={enabled:boolean;retention_days:number};
 export default function Settings() {
@@ -119,6 +120,7 @@ export default function Settings() {
         <h2>AI processing</h2>
         <p className="muted">With your consent, search text can be sent to the configured AI provider to expand clues, and selected email text can be sent to the configured AI and embedding providers. Explicit search filters remain in effect; without consent, Find stays keyword-only.</p>
       </section>
+      <MemoryPanel />
       {feedbackConfig.enabled && (
         <section className="card">
           <h2>Search ranking feedback</h2>

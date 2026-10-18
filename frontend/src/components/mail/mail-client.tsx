@@ -34,6 +34,45 @@ type MobilePane = "folders" | "list" | "reading";
 type SyncState = "complete" | "indexing" | "unknown";
 
 /**
+ * The folder pane's width is a preference, so it is remembered -- but a
+ * preference the reader never set is not one. Below this width three columns
+ * leave the reading pane too narrow to read an email in, so the rail is the
+ * default rather than a choice.
+ *
+ * Only above the one-pane breakpoint: on a phone the folders *are* the whole
+ * screen, and a 56px rail there is a narrow list of icons with nothing beside
+ * them.
+ */
+const FOLDERS_COLLAPSED_KEY = "email-finder-folders-collapsed";
+const AUTO_COLLAPSE_BELOW = 1100;
+const ONE_PANE_BELOW = 768;
+
+function defaultFoldersCollapsed(): boolean {
+  return (
+    window.innerWidth >= ONE_PANE_BELOW && window.innerWidth < AUTO_COLLAPSE_BELOW
+  );
+}
+
+function readCollapsedPreference(): boolean | null {
+  try {
+    const stored = window.localStorage.getItem(FOLDERS_COLLAPSED_KEY);
+    if (stored === "true") return true;
+    if (stored === "false") return false;
+  } catch {
+    // Private mode, blocked storage, quota. A preference is not worth an error.
+  }
+  return null;
+}
+
+function writeCollapsedPreference(collapsed: boolean): void {
+  try {
+    window.localStorage.setItem(FOLDERS_COLLAPSED_KEY, String(collapsed));
+  } catch {
+    // Not being able to remember is not a failure; the pane still works.
+  }
+}
+
+/**
  * Chip kind -> the operator that produced it, so removing a chip can strip that
  * exact token from the query and re-run without a model call.
  */
@@ -62,6 +101,20 @@ export default function MailClient() {
   const [unreadTotal, setUnreadTotal] = useState(0);
   const [folderId, setFolderId] = useState<string | null>(null);
   const [foldersCollapsed, setFoldersCollapsed] = useState(false);
+
+  // Restored once on mount, not on every render: a resize must not silently
+  // undo a choice the reader made.
+  useEffect(() => {
+    const stored = readCollapsedPreference();
+    setFoldersCollapsed(stored ?? defaultFoldersCollapsed());
+  }, []);
+
+  const toggleFolders = useCallback(() => {
+    setFoldersCollapsed((current) => {
+      writeCollapsedPreference(!current);
+      return !current;
+    });
+  }, []);
   const [syncState, setSyncState] = useState<SyncState>("unknown");
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
 
@@ -551,7 +604,7 @@ export default function MailClient() {
   }
 
   return (
-    <main className="mail-page" data-pane={mobilePane}>
+    <main className="mail-page" data-pane={mobilePane} data-folders={foldersCollapsed ? "collapsed" : "expanded"}>
       <h1 className="sr-only">Mail</h1>
       <AskBar
         value={query}
@@ -628,7 +681,7 @@ export default function MailClient() {
             setMobilePane("list");
             clearAsk();
           }}
-          onToggle={() => setFoldersCollapsed((value) => !value)}
+          onToggle={toggleFolders}
           collapsed={foldersCollapsed}
         />
 

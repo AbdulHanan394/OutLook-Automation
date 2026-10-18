@@ -192,6 +192,105 @@ def sanitize_email_html(html: str | None, *, allow_images: bool = False) -> str:
     return str(root)
 
 
+# A colour the email chose for itself. Anything matching here means the message
+# cannot be repainted into the app's theme without either destroying it (forcing
+# inherit over a white table) or leaving it unreadable (keeping white text on a
+# dark surface), so the reader is told the colours are the sender's and the
+# message is shown on paper in both themes instead.
+#
+# Only attributes the sanitizer keeps can appear in the output -- <style> blocks
+# are dropped with their content -- so this only has to look for inline styles
+# and the legacy presentational attributes.
+_STYLE_ATTR = re.compile(r"""style\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
+_COLOUR_PROPERTY = re.compile(
+    r"(?:^|[;{\s])(?:-?[\w-]*color|background(?:-color|-image)?)\s*:", re.IGNORECASE
+)
+_LEGACY_COLOUR_ATTR = re.compile(
+    r"""\s(?:bgcolor|color|text)\s*=\s*["'][^"']*["']""", re.IGNORECASE
+)
+
+
+def carries_inline_colour(html: str | None) -> bool:
+    """Whether this email brings its own colours rather than inheriting ours."""
+    if not html:
+        return False
+    if _LEGACY_COLOUR_ATTR.search(html):
+        return True
+    return any(_COLOUR_PROPERTY.search(value) for value in _STYLE_ATTR.findall(html))
+
+
+# The colour an email paints behind its own text. Read separately from
+# carries_inline_colour because "the email brings its own colours" and "the
+# email brings its own *dark* colours" need opposite handling: one is shown as
+# the sender designed it, the other has to have its ink replaced no matter what.
+_BACKGROUND_VALUE = re.compile(
+    r"""(?:background(?:-color)?|bgcolor)\s*[:=]\s*["']?\s*([^;"'\s>)]+)""",
+    re.IGNORECASE,
+)
+_NAMED_COLOURS = {
+    "black": (0, 0, 0),
+    "white": (255, 255, 255),
+    "navy": (0, 0, 128),
+    "midnightblue": (25, 25, 112),
+    "darkslategray": (47, 79, 79),
+    "dimgray": (105, 105, 105),
+}
+# Below this relative luminance a background is dark enough that dark ink on top
+# of it is unreadable regardless of which theme the reader is using.
+DARK_BACKGROUND_LUMINANCE = 0.35
+
+
+def _parse_css_colour(value: str) -> tuple[int, int, int] | None:
+    candidate = value.strip().lower().rstrip(";")
+    if candidate in {"transparent", "none", "inherit", "initial"} or not candidate:
+        return None
+    if candidate in _NAMED_COLOURS:
+        return _NAMED_COLOURS[candidate]
+    rgb = re.match(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)", candidate)
+    if rgb:
+        return (int(rgb.group(1)), int(rgb.group(2)), int(rgb.group(3)))
+    hex_colour = re.fullmatch(r"#([0-9a-f]{3}|[0-9a-f]{6})", candidate)
+    if hex_colour:
+        digits = hex_colour.group(1)
+        if len(digits) == 3:
+            digits = "".join(digit * 2 for digit in digits)
+        return (
+            int(digits[0:2], 16),
+            int(digits[2:4], 16),
+            int(digits[4:6], 16),
+        )
+    return None
+
+
+def _relative_luminance(rgb: tuple[int, int, int]) -> float:
+    channels = []
+    for value in rgb:
+        scaled = value / 255
+        channels.append(
+            scaled / 12.92 if scaled <= 0.03928 else ((scaled + 0.055) / 1.055) ** 2.4
+        )
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def declares_dark_background(html: str | None) -> bool:
+    """Whether the email paints a background of its own that is too dark to read.
+
+    Such a message is unreadable in two ways at once: preserving the sender's
+    black ink puts it on their own dark background, and putting it on the app's
+    light surface does not help because the sender's background paints over the
+    surface anyway. The only thing that can be fixed is the ink, so this is the
+    signal the renderer uses to force a light one.
+    """
+    if not html:
+        return False
+    for value in _BACKGROUND_VALUE.findall(html):
+        rgb = _parse_css_colour(value)
+        if rgb is None:
+            continue
+        return _relative_luminance(rgb) < DARK_BACKGROUND_LUMINANCE
+    return False
+
+
 # Quote detection is deliberately conservative: we only collapse a trailing
 # block when it carries a marker that mail clients themselves emit, because
 # guessing wrong would hide content the reader asked to see.

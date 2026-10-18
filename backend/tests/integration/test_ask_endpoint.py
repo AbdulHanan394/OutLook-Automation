@@ -775,13 +775,16 @@ def test_retrieval_ranks_by_relevance_not_by_date(client: TestClient, db, monkey
     contain one common word, so the message the reader actually meant never
     reached the model at all.
     """
-    seen_labels: list[str] = []
+    # Excerpts are presented to the model as ``<email id="E1" subject="...">``,
+    # where the id is a positional label, not the row's id. Ranking is therefore
+    # read from the subjects, in the order they were offered.
+    seen_subjects: list[str] = []
 
     class Peeking:
         def json_message(self, system: str, prompt: str, max_tokens: int = 1200):
             if "keywords" in system:
                 return ({"keywords": ["budget"]}, 5, 5)
-            seen_labels.extend(re.findall(r'<email id="([^"]+)"', prompt))
+            seen_subjects.extend(re.findall(r'<email id="[^"]+" subject="([^"]+)"', prompt))
             return ({"sufficient_evidence": False, "answer": None, "claims": []}, 5, 5)
 
     monkeypatch.setattr("app.api.routes_ask.reserve_claude_call", lambda *a, **k: True)
@@ -805,10 +808,13 @@ def test_retrieval_ranks_by_relevance_not_by_date(client: TestClient, db, monkey
     sign_in(db, client, user)
     read_events(ask(client, str(mailbox.id), QUESTION))
 
-    assert seen_labels, "the model was given no context at all"
-    assert str(relevant.id) in seen_labels, (
+    assert seen_subjects, "the model was given no context at all"
+    assert relevant.subject in seen_subjects, (
         "the message matching the question was crowded out of the excerpt slots "
         "by newer, less relevant ones"
+    )
+    assert seen_subjects[0] == relevant.subject, (
+        f"the newest message won the first slot: {seen_subjects[:3]}"
     )
 
 

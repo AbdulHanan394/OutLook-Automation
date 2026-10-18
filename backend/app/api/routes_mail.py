@@ -28,7 +28,12 @@ from app.mail.folders import (
     FOLDER_ORDER,
     folder_display_name,
 )
-from app.mail.sanitize import sanitize_email_html, split_quoted
+from app.mail.sanitize import (
+    carries_inline_colour,
+    declares_dark_background,
+    sanitize_email_html,
+    split_quoted,
+)
 from app.security.rate_limit import enforce_user_rate_limit
 from app.security.sessions import require_user
 
@@ -45,9 +50,118 @@ THEME_FONT_FAMILY = (
 )
 THEME_FONT = f"font-family:{THEME_FONT_FAMILY}"
 
+# Mirrors tokens.css: --surface / --text / --text-3 / --border / --brand-1.
+THEME_PALETTES: dict[str, dict[str, str]] = {
+    "light": {
+        "surface": "#efeded",
+        "ink": "#171516",
+        "muted": "#706a6e",
+        "rule": "#d4d1d2",
+        "link": "#4338ca",
+        "select_bg": "#4338ca",
+        "select_ink": "#f8f7f7",
+    },
+    "dark": {
+        "surface": "#1c1a1b",
+        "ink": "#f3f0f1",
+        "muted": "#a49da0",
+        "rule": "#393536",
+        "link": "#818cf8",
+        "select_bg": "#818cf8",
+        "select_ink": "#121011",
+    },
+}
+
+# An email that brings its own colours is shown on paper in *both* themes. A
+# white table with black text is the overwhelmingly common case, and repainting
+# it into a dark theme means either overriding the sender's design or leaving
+# the reader with black-on-black. Paper plus a label is the only honest option.
+PAPER_PALETTES = {
+    "surface": "#ffffff",
+    "ink": "#171516",
+    "muted": "#706a6e",
+    "rule": "#d4d1d2",
+    "link": "#2b3ec9",
+    "select_bg": "#4338ca",
+    "select_ink": "#f8f7f7",
+}
+
+# A sender-designed *dark* email is the mirror image of the paper case, and gets
+# the mirror-image fix: a dark sheet with light ink, in *both* themes.
+#
+# The surface changes as well as the ink. Forcing light ink onto the light
+# theme's background would make the parts of the message that sit outside the
+# sender's own dark element invisible -- light on light, which is the same
+# unreadable outcome by a different route.
+DARK_BACKGROUND_PALETTE = {**THEME_PALETTES["dark"], "link": "#a5b4fc"}
+
+
+def _render_palette(
+    theme: str, *, paper: bool = False, dark_background: bool = False
+) -> dict[str, str]:
+    if dark_background:
+        return DARK_BACKGROUND_PALETTE
+    return PAPER_PALETTES if paper else THEME_PALETTES[theme]
+
+
+def _render_style(palette: dict[str, str], *, force_inherit: bool) -> str:
+    """The base stylesheet for the sandboxed email document.
+
+    ``force_inherit`` is used only for messages with no colour of their own. For
+    those, pinning every descendant to the body's colour is what guarantees the
+    message is readable in whichever theme is active -- a body rule alone loses
+    to any inline style, and dark mode turns unstyled HTML emails black-on-black
+    on some clients that supply default dark colours. For an email that *does*
+    carry its own colours this is switched off, because overriding them is
+    exactly the destruction the "Original formatting" path exists to avoid.
+
+    The selector is ``body *`` and not ``*``. A universal selector matches the
+    body element itself, so ``*`` would make the body inherit from <html> --
+    which has no colour of its own -- and every message would render in the
+    user-agent's default text colour on our dark surface: black on black.
+    """
+    base = (
+        f"body{{margin:0;padding:14px;{THEME_FONT};font-size:13px;line-height:1.6;"
+        f"background:{palette['surface']};color:{palette['ink']}}}"
+    )
+    inherit = (
+        f"body *{{color:inherit!important;font-family:inherit!important;{THEME_FONT_FAMILY}}}"
+        if force_inherit
+        else ""
+    )
+    return (
+        base
+        + inherit
+        + f"a{{color:{palette['link']}}}"
+        f"a:visited{{color:{palette['link']}}}"
+        f"blockquote{{margin:0;padding-left:12px;border-left:3px solid {palette['rule']}}}"
+        "img{max-width:100%;height:auto}"
+        "pre{white-space:pre-wrap;word-break:break-word;font-family:inherit}"
+        "table{max-width:100%}"
+        # Selection has to be visible in both themes, and the default selection
+        # colour is chosen by the UA against a background it cannot see. Only a
+        # flat <color> works here: ::selection silently drops a gradient, which
+        # is why an earlier rule pairing --brand-gradient with white text left
+        # light mode showing white on white.
+        f"::selection{{background:{palette['select_bg']};"
+        f"color:{palette['select_ink']}}}"
+        # Firefox honours only the prefixed form.
+        f"::-moz-selection{{background:{palette['select_bg']};"
+        f"color:{palette['select_ink']}}}"
+        f"[data-blocked-image]{{display:inline-block;min-width:24px;min-height:24px;"
+        f"border:1px dashed {palette['muted']};vertical-align:middle}}"
+        f".original-formatting{{margin:0 0 10px;padding:2px 8px;border-radius:999px;"
+        f"background:{palette['muted']};color:{palette['surface']};"
+        f"font:{THEME_FONT};font-size:10px;font-weight:700;"
+        "letter-spacing:0.06em;text-transform:uppercase;display:inline-block}"
+    )
+
 __all__ = [
+    "DARK_BACKGROUND_PALETTE",
     "FOLDER_DISPLAY_NAMES",
     "FOLDER_ORDER",
+    "PAPER_PALETTES",
+    "THEME_PALETTES",
     "folder_display_name",
     "get_message",
     "get_thread",
@@ -410,46 +524,38 @@ def render_message(
             f"base-uri 'none'; form-action 'none'; frame-ancestors {ancestors}"
         )
     )
-    # The iframe is an opaque origin, so it inherits no colour scheme and cannot
+    # The iframe is an opaque origin: it inherits no colour scheme and cannot
     # see the app's data-theme attribute. The reader's chosen theme is passed
     # explicitly rather than guessed from prefers-color-scheme, which would
-    # disagree whenever the app theme differs from the OS setting.
+    # disagree whenever the app theme differs from the OS setting. The whole
+    # sheet below is re-sent on every theme change, which is why the reader
+    # reloads the frame when data-theme flips rather than editing it in place.
     #
     # The font stack mirrors the app's --font-mono. It is named rather than
     # inherited: an opaque-origin frame inherits *nothing* from its embedder, so
     # `font-family: inherit` silently resolved to the UA default and every email
     # rendered in a serif face the rest of the app does not use.
-    palette = (
-        {"ink": "#171516", "paper": "#f8f7f7", "muted": "#777174", "rule": "#d4d1d2"}
-        if theme == "light"
-        else {"ink": "#f3f0f1", "paper": "#1c1a1b", "muted": "#a49da0", "rule": "#393536"}
-    )
-    style = (
-        f"body{{margin:0;padding:14px;{THEME_FONT};"
-        f"background:{palette['paper']};color:{palette['ink']}}}"
-        # Email markup almost always hard-codes its own colours, and a body rule
-        # loses to any inline style. Left alone, dark mode rendered half of
-        # every email as black-on-black. `!important` is the only thing that
-        # beats an inline declaration, and the theme has to win or the reading
-        # pane is unreadable in one of the two themes.
-        "*,*::before,*::after{color:inherit!important;"
-        f"font-family:inherit!important;{THEME_FONT_FAMILY}}}"
-        f"a{{color:{palette['ink']}}}"
-        f"blockquote{{margin:0;padding-left:12px;border-left:3px solid {palette['rule']}}}"
-        "img{max-width:100%;height:auto}"
-        "pre{white-space:pre-wrap;word-break:break-word;font-family:inherit}"
-        "table{max-width:100%}"
-        f"[data-blocked-image]{{display:inline-block;min-width:24px;min-height:24px;"
-        f"border:1px dashed {palette['muted']};vertical-align:middle}}"
+    dark_background = declares_dark_background(safe)
+    paper = carries_inline_colour(safe) and not dark_background
+    palette = _render_palette(theme, paper=paper, dark_background=dark_background)
+    # A dark-background email is the one case where the sender's ink is
+    # overridden: their background paints over ours whatever we do, so replacing
+    # the ink is the only way to keep the text readable. Everything else is
+    # either left alone (paper) or has nothing to conflict with (themed).
+    style = _render_style(palette, force_inherit=not paper)
+    label = (
+        '<p class="original-formatting">Original formatting</p>'
+        if paper or dark_background
+        else ""
     )
     document = (
         '<!doctype html><html><head><meta charset="utf-8">'
         # Second layer: a document policy intersects with the header policy, so
         # both have to agree for anything to load.
         f'<meta http-equiv="Content-Security-Policy" content="{policy}">'
-        '<meta name="color-scheme" content="' + theme + '">'
+        f'<meta name="color-scheme" content="{theme}">'
         f"<style>{style}</style></head><body>"
-        f"{safe}</body></html>"
+        f"{label}{safe}</body></html>"
     )
     return Response(
         content=document,
